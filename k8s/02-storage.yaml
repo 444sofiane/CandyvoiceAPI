@@ -1,0 +1,51 @@
+# POURQUOI CE PVC EST OBLIGATOIRE (pas juste "nice to have") :
+#
+# app/config.py définit UPLOAD_DIR / OUTPUT_DIR comme des chemins sur le
+# disque du conteneur. app/services/process_flow.py écrit le fichier
+# traité sur ce disque, et app/routers/outputs.py le relit depuis ce même
+# disque pour le téléchargement (GET /outputs/{output_name}).
+#
+# Avec plusieurs replicas derrière un Service/Ingress, RIEN ne garantit
+# que la requête de téléchargement retombe sur le même pod que celui qui
+# a traité le fichier. Sans volume partagé, le téléchargement échouerait
+# aléatoirement avec un 404 selon le pod qui répond -> c'est exactement le
+# genre de bug "ça marche en solo, ça casse dès qu'on scale" que ce test
+# d'infra doit débusquer.
+#
+# RWX (ReadWriteMany) est donc requis ici, pas RWO. Concrètement, selon le
+# cluster cible :
+#   GKE  -> Filestore (NFS)     AKS -> Azure Files     EKS -> EFS
+# En test local minikube/kind, un provisioner NFS simple suffit.
+#
+# Alternative à envisager une fois cette étape validée : basculer
+# uploads/outputs vers un bucket objet (S3/GCS) plutôt qu'un PVC RWX,
+# ce qui évite toute dépendance à un StorageClass RWX spécifique au
+# cloud. Nécessiterait une petite modif d'audio.py / process_flow.py /
+# outputs.py — hors scope de ce test d'infra "à code égal".
+
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: candyvoice-uploads
+  namespace: candyvoice
+spec:
+  accessModes:
+    - ReadWriteMany
+  resources:
+    requests:
+      storage: 20Gi
+  storageClassName: shared-rwx   # à adapter selon le cluster cible
+
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: candyvoice-outputs
+  namespace: candyvoice
+spec:
+  accessModes:
+    - ReadWriteMany
+  resources:
+    requests:
+      storage: 20Gi
+  storageClassName: shared-rwx   # à adapter selon le cluster cible

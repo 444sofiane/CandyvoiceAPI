@@ -1,0 +1,142 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: candyvoice-api
+  namespace: candyvoice
+spec:
+  replicas: 2   # >= 2 dès le départ : plus de single point of failure sur une seule machine
+  selector:
+    matchLabels:
+      app: candyvoice-api
+  template:
+    metadata:
+      labels:
+        app: candyvoice-api
+    spec:
+      containers:
+        - name: api
+          image: REGISTRY/candyvoice-api:wine-mockup   # à remplacer par ton registry (GHCR/ECR/GCR...)
+          ports:
+            - containerPort: 8001
+          envFrom:
+            - configMapRef:
+                name: candyvoice-config
+            - secretRef:
+                name: candyvoice-secrets
+          volumeMounts:
+            - name: uploads
+              mountPath: /app/uploads
+            - name: outputs
+              mountPath: /app/outputs
+            - name: firebase-adminsdk
+              mountPath: /app/secrets
+              readOnly: true
+          # Wine + le .exe sous charge peuvent être plus lourds qu'un
+          # binaire natif -> prévoir large ici. À revoir à la baisse une
+          # fois passé sur imitation_linux (pas de couche Wine).
+          resources:
+            requests:
+              cpu: 500m
+              memory: 1Gi
+            limits:
+              cpu: 2
+              memory: 3Gi
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8001
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8001
+            initialDelaySeconds: 30
+            periodSeconds: 20
+          # Le traitement (subprocess Wine + .exe) peut prendre du temps ;
+          # laisse le temps à un pod en cours de traitement de finir avant
+          # d'être tué lors d'un rollout.
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sleep", "10"]
+      terminationGracePeriodSeconds: 60
+      volumes:
+        - name: uploads
+          persistentVolumeClaim:
+            claimName: candyvoice-uploads
+        - name: outputs
+          persistentVolumeClaim:
+            claimName: candyvoice-outputs
+        - name: firebase-adminsdk
+          secret:
+            secretName: candyvoice-firebase-adminsdk
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: candyvoice-api
+  namespace: candyvoice
+spec:
+  selector:
+    app: candyvoice-api
+  ports:
+    - port: 80
+      targetPort: 8001
+  type: ClusterIP   # exposé ensuite via l'Ingress
+
+---
+# C'est LE test qui répond directement à ton point bloquant : on peut
+# maintenant ajouter des instances derrière le Service sans qu'elles
+# dépendent d'une machine Windows partagée — chaque pod a son propre
+# imitation.exe + Wine + modèles.
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: candyvoice-api-hpa
+  namespace: candyvoice
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: candyvoice-api
+  minReplicas: 2
+  maxReplicas: 8
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: candyvoice-ingress
+  namespace: candyvoice
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    # Le websocket /ws/deepfake a besoin de connexions persistantes ;
+    # augmente le timeout proxy par défaut du controller nginx.
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "600"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - api.candyvoice.example.com
+      secretName: candyvoice-tls
+  rules:
+    - host: api.candyvoice.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: candyvoice-api
+                port:
+                  number: 80

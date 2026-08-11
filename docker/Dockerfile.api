@@ -1,0 +1,109 @@
+# ============================================================
+# CandyVoice API — image de test "infra" utilisant imitation.exe
+# via Wine, en attendant le binaire Linux natif.
+# ============================================================
+# But de cette image : prouver que l'architecture Docker/K8s
+# (replicas multiples, HPA, plus de machine Windows unique) marche
+# sur le VRAI code FastAPICandyVoice, sans attendre le binaire Linux.
+#
+# Dès que tu as imitation_linux :
+#   1. Supprime tout le bloc "Wine" ci-dessous
+#   2. Remplace vendor/imitation.exe par vendor/imitation_linux
+#   3. Dans app/services/detector.py, la branche `wine` de
+#      resolve_executable() devient simplement inutile (elle ne se
+#      déclenche que si un fichier nommé imitation.exe existe) — tu
+#      peux la laisser ou la retirer, aucune urgence.
+#   4. L'image redevient un python:3.11-slim classique, beaucoup plus
+#      légère et plus rapide à builder.
+
+FROM ubuntu:22.04 AS base
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    WINEDEBUG=-all \
+    WINEARCH=win64 \
+    WINEPREFIX=/opt/wine \
+    PYTHONUNBUFFERED=1 \
+    HOME=/root \
+    XDG_RUNTIME_DIR=/tmp/xdg-runtime \
+    WINEDLLOVERRIDES="mscoree=;mshtml="
+
+# XDG_RUNTIME_DIR must exist with 0700 perms, or wine/wineserver warns (and
+# some wine builds bail out) — this is what "XDG_RUNTIME_DIR not set in the
+# environment" in your curl output was about.
+RUN mkdir -p "$XDG_RUNTIME_DIR" && chmod 0700 "$XDG_RUNTIME_DIR"
+
+# --- Wine (pour exécuter imitation.exe sur Linux) ---------------------
+# Suit l'installation officielle WineHQ pour Ubuntu 22.04 (jammy).
+# Voir https://wiki.winehq.org/Ubuntu si une version plus récente existe.
+RUN dpkg --add-architecture i386 && \
+    apt-get update && \
+    apt-get install -y --no-install-recommends ca-certificates gnupg2 curl wget xz-utils cabextract winbind && \
+    mkdir -pm755 /etc/apt/keyrings && \
+    wget -O /etc/apt/keyrings/winehq-archive.key https://dl.winehq.org/wine-builds/winehq.key && \
+    wget -NP /etc/apt/sources.list.d/ https://dl.winehq.org/wine-builds/ubuntu/dists/jammy/winehq-jammy.sources && \
+    apt-get update && \
+    apt-get install -y --no-install-recommends --install-recommends winehq-stable && \
+    rm -rf /var/lib/apt/lists/*
+
+# winetricks itself is a shell script, not packaged reliably across distros —
+# pull the maintained one directly.
+RUN wget -O /usr/local/bin/winetricks https://raw.githubusercontent.com/Winetricks/winetricks/master/src/winetricks && \
+    chmod +x /usr/local/bin/winetricks
+
+# --- Python 3.11 --------------------------------------------------------
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3.11 python3.11-venv python3-pip \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY requirements.txt .
+RUN python3.11 -m pip install --no-cache-dir -r requirements.txt
+
+# --- Prépare le wineprefix une fois pour toutes au build, pas au ---------
+# --- premier lancement, pour ne pas payer ce coût à chaque cold start ----
+# WINEDLLOVERRIDES ci-dessus désactive mscoree/mshtml pour que wineboot
+# n'essaie pas de télécharger Mono/Gecko pendant le build (ça a besoin de
+# réseau, et si ça échoue à moitié le wineprefix reste mal initialisé —
+# symptôme typique : le .exe échoue silencieusement, sans stdout, avec un
+# exit code qui ne veut rien dire). imitation.exe n'a a priori pas besoin
+# de .NET ni d'un moteur HTML embarqué.
+RUN wine wineboot --init 2>&1 | tail -n 20 || true
+
+# imitation.exe was found (via WINEDEBUG=err+all) to need VCRUNTIME140.dll,
+# which isn't part of a bare wineprefix. vcrun2019 installs
+# VCRUNTIME140.dll + VCRUNTIME140_1.dll + the matching MSVCP140 —
+# needs network access at build time (downloads the real MS redistributable).
+RUN winetricks -q vcrun2019 2>&1 | tail -n 40 || true
+
+# --- Code applicatif (le vrai FastAPICandyVoice, patché pour Wine) ------
+COPY app/ ./app/
+
+# --- Binaire + modèles ----------------------------------------------
+# Place ici, dans le contexte de build, ton vrai imitation.exe et le
+# dossier Model/ (voir vendor/README.md). Ce sont volontairement DES
+# fichiers absents du repo git (gros binaires + modèles propriétaires) —
+# on les copie depuis un dossier local ignoré par git, ou depuis un
+# volume monté en k8s (voir k8s/03-storage.yaml pour l'option volume).
+COPY vendor/imitation.exe ./imitation.exe
+# imitation.exe dynamically loads tensorflowlite_c.dll from its own
+# directory (standard Windows DLL search order) — it must sit right next
+# to the exe. See vendor/README.md for where to find it on the Windows box.
+COPY vendor/tensorflowlite_c.dll ./tensorflowlite_c.dll
+# -deep_fake also needs modele.tflite next to the exe (relative path,
+# resolved by Wine as Z:\app\modele.tflite) — without it the process fails
+# with "Could not open 'Z:\app/modele.tflite'" and crashes on the null model.
+COPY vendor/modele.tflite ./modele.tflite
+COPY vendor/imitation/Model ./imitation/Model
+
+# uploads/ et outputs/ doivent être un volume partagé entre replicas en
+# k8s (voir k8s/03-storage.yaml) — sinon un pod qui a traité le fichier
+# n'est pas forcément celui qui reçoit la requête de téléchargement.
+RUN mkdir -p uploads outputs
+
+EXPOSE 8001
+
+HEALTHCHECK --interval=15s --timeout=5s --start-period=20s --retries=3 \
+    CMD curl -f http://localhost:8001/health || exit 1
+
+CMD ["python3.11", "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8001", "--workers", "1"]

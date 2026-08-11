@@ -1,0 +1,54 @@
+version: "3.9"
+
+# Test local de la VRAIE API (imitation.exe via Wine) avant de passer sur
+# Kubernetes. Lance 2 replicas pour vérifier tout de suite que le download
+# de fichiers casse si DOWNLOAD_TOKEN_SECRET n'est pas fixé (voir .env.example)
+# et qu'il fonctionne correctement une fois fixé.
+#
+#   cp .env.example .env   # puis remplis les vraies valeurs
+#   docker compose up --build --scale api=2
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.api
+    # Bindé sur 127.0.0.1 uniquement : utile pour tes tests curl locaux
+    # (comme avant), mais plus exposé publiquement — c'est Traefik, via le
+    # réseau partagé ci-dessous, qui gère tout le trafic externe désormais.
+    ports:
+      - "127.0.0.1:8001-8002:8001"
+    env_file:
+      - .env
+    volumes:
+      - shared_uploads:/app/uploads
+      - shared_outputs:/app/outputs
+      - ./secrets:/app/secrets:ro   # place ton firebase-adminsdk.json ici
+    networks:
+      - traefikcandy_traefik
+    deploy:
+      replicas: 2
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.candyvoice_api.rule=Host(`api.candyvoice.com`)"
+      # Priorité explicite : sans ça, Traefik départage deux routers avec la
+      # même règle par ordre alphabétique du nom, et un autre conteneur
+      # ("backend", /srv/backend) qui revendique aussi api.candyvoice.com
+      # gagnait — toutes les requêtes (dont /ws/deepfake) lui étaient
+      # envoyées silencieusement au lieu d'atteindre cette API.
+      - "traefik.http.routers.candyvoice_api.priority=100"
+      - "traefik.http.routers.candyvoice_api.entrypoints=websecure"
+      - "traefik.http.routers.candyvoice_api.tls=true"
+      - "traefik.http.routers.candyvoice_api.tls.certresolver=myresolver"
+      - "traefik.http.routers.candyvoice_api.service=candyvoice_api_svc"
+      - "traefik.http.services.candyvoice_api_svc.loadbalancer.server.port=8001"
+
+# Réseau externe déjà créé par ta stack Traefik existante — on ne le
+# (re)crée pas, on s'y raccroche juste, exactement comme contact-form.
+networks:
+  traefikcandy_traefik:
+    external: true
+
+volumes:
+  shared_uploads:
+  shared_outputs:

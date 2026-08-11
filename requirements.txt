@@ -1,0 +1,25 @@
+fastapi==0.111.0
+uvicorn[standard]==0.30.1
+python-dotenv==1.0.1
+pydantic==2.7.1
+
+# Firebase / Firestore
+firebase-admin==6.5.0
+google-cloud-firestore==2.16.0
+google-auth==2.29.0
+
+# Reporting (reporting.py)
+openpyxl==3.1.2
+
+# Zoho / SMTP2GO HTTP calls
+requests==2.32.3
+
+# Upload mime sniffing (audio.py)
+filetype==1.2.0
+
+# NOTE: pywinpty is intentionally NOT listed here — it wraps the Windows
+# ConPTY API and can't be built/installed on Linux at all (see
+# app/services/detector.py's try/except import). On Linux the code falls
+# back to a plain POSIX pty (stdlib `pty`, no extra dependency), which is
+# what actually gets live progress out of imitation.exe under Wine — a raw
+# pipe leaves its stdout fully buffered until the process exits.
