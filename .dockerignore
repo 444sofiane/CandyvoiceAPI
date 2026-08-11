@@ -1,0 +1,47 @@
+.git/
+.gitignore
+.dockerignore
+
+# Secrets / env
+secrets/
+app/secrets/
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*.so
+.venv/
+venv/
+env/
+*.egg-info/
+.eggs/
+
+# Testing / caches
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.mypy_cache/
+.ruff_cache/
+app/tests/
+
+# Docs / non-runtime
+docs/
+README.md
+k8s/
+docker-compose.yml
+docker-compose.override.yml
+
+# IDE / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
