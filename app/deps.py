@@ -1,14 +1,23 @@
-"""Shared FastAPI dependencies: Firebase auth + per-uid rate limiting.
-Replaces the repeated _authenticate_request / check_rate_limit calls at the
-top of every handler in api_server.py with a single reusable dependency.
+"""Shared FastAPI dependencies: Firebase auth + API-key auth + per-uid rate
+limiting. Replaces the repeated _authenticate_request / check_rate_limit
+calls at the top of every handler in api_server.py with a single reusable
+dependency.
 """
 import threading
 import time
+from dataclasses import dataclass
 
-from fastapi import Header, HTTPException, Request
+from fastapi import Depends, Header, HTTPException, Request
 
 from app import config
-from app.services.firebase import verify_firebase_id_token
+from app.services.api_keys import resolve_api_key
+from app.services.firebase import FirestoreUnavailableError, verify_firebase_id_token
+
+
+@dataclass
+class AuthContext:
+    uid: str
+    auth_method: str  # "firebase" | "api_key"
 
 _rate_limit_lock = threading.Lock()
 _recent_requests_by_uid = {}  # uid -> list[timestamp]
@@ -75,19 +84,41 @@ async def get_current_user(authorization: str = Header(default="")) -> dict:
     return _verify_bearer_token(authorization)
 
 
-async def get_current_uid_rate_limited(authorization: str = Header(default="")) -> str:
+async def get_current_auth(
+    authorization: str = Header(default=""),
+    x_api_key: str | None = Header(default=None, alias="X-API-Key"),
+) -> AuthContext:
+    """Accepts either an API key (X-API-Key header — for server-to-server
+    callers with their own application, issued via /api/admin/api-keys) or
+    a Firebase ID token (Authorization: Bearer ...). The API key takes
+    precedence when both are present, since a caller using one wouldn't be
+    expected to send the other."""
+    if x_api_key:
+        try:
+            uid = resolve_api_key(x_api_key)
+        except FirestoreUnavailableError as exc:
+            raise HTTPException(status_code=503, detail=str(exc))
+        if not uid:
+            raise HTTPException(status_code=401, detail="Invalid or revoked API key")
+        return AuthContext(uid=uid, auth_method="api_key")
+
+    decoded_token = _verify_bearer_token(authorization)
+    return AuthContext(uid=decoded_token.get("uid"), auth_method="firebase")
+
+
+async def get_current_uid_rate_limited(auth: AuthContext = Depends(get_current_auth)) -> AuthContext:
     """Combines auth + rate limiting into one dependency, mirroring
     NoiseFilterHandler._authenticate_and_rate_limit(). Use this as the
-    dependency on every feature-processing route."""
-    decoded_token = _verify_bearer_token(authorization)
-    uid = decoded_token.get("uid")
-
+    dependency on every feature-processing route. Rate limiting applies to
+    both auth methods alike, keyed by uid — quota/storage/Zoho-sync
+    bypassing for API-key callers is a separate decision made downstream by
+    each route, based on `auth.auth_method`."""
     try:
-        check_rate_limit(uid)
+        check_rate_limit(auth.uid)
     except RateLimitExceededError as exc:
         raise HTTPException(status_code=429, detail=str(exc))
 
-    return uid
+    return auth
 
 
 async def verify_websocket_token(token: str) -> dict:

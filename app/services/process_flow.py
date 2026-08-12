@@ -10,6 +10,7 @@ subprocess.run are both blocking) — FastAPI routers call it via
 asyncio.to_thread so the event loop stays free for other requests/websockets
 meanwhile.
 """
+import base64
 import os
 import subprocess
 import wave
@@ -36,9 +37,19 @@ def run_feature_processing(
     build_command,  # callable(input_path, output_path) -> list[str]
     extra_response_fields: dict | None = None,
     error_label: str,
+    bypass_quota_and_storage: bool = False,
 ) -> dict:
+    """`bypass_quota_and_storage` is set for API-key callers: their files
+    are their own application's data, not ours, so no quota is
+    reserved/counted, nothing is persisted to Firestore or synced to Zoho,
+    and both the uploaded input and the processed output are deleted from
+    local disk immediately after the response is built (rather than kept
+    around on a TTL) — the output is returned inline as base64 instead of
+    via a downloadable /outputs/ URL, since there's no file left to serve
+    by the time the response is sent."""
     extra_response_fields = extra_response_fields or {}
-    sync_confidential_flag_to_zoho(uid, confidential)
+    if not bypass_quota_and_storage:
+        sync_confidential_flag_to_zoho(uid, confidential)
 
     # --- upload -----------------------------------------------------
     try:
@@ -67,20 +78,23 @@ def run_feature_processing(
         )
 
     # --- quota reservation --------------------------------------------
-    try:
-        firestore_client = get_firestore_client()
-        usage_ref = firestore_client.collection("usage").document(uid)
-        reserve_usage_file(firestore_client.transaction(), usage_ref, feature_key)
-    except FirestoreUnavailableError as exc:
-        audio.cleanup_file(input_path)
-        raise HTTPException(status_code=503, detail=str(exc))
-    except QuotaExceededError as exc:
-        audio.cleanup_file(input_path)
-        raise HTTPException(status_code=429, detail=str(exc))
-    except Exception as exc:  # noqa: BLE001
-        print(f"Quota reservation failed for {uid}/{feature_key}: {exc}")
-        audio.cleanup_file(input_path)
-        raise HTTPException(status_code=503, detail=f"Could not verify quota: {exc}")
+    firestore_client = None
+    usage_ref = None
+    if not bypass_quota_and_storage:
+        try:
+            firestore_client = get_firestore_client()
+            usage_ref = firestore_client.collection("usage").document(uid)
+            reserve_usage_file(firestore_client.transaction(), usage_ref, feature_key)
+        except FirestoreUnavailableError as exc:
+            audio.cleanup_file(input_path)
+            raise HTTPException(status_code=503, detail=str(exc))
+        except QuotaExceededError as exc:
+            audio.cleanup_file(input_path)
+            raise HTTPException(status_code=429, detail=str(exc))
+        except Exception as exc:  # noqa: BLE001
+            print(f"Quota reservation failed for {uid}/{feature_key}: {exc}")
+            audio.cleanup_file(input_path)
+            raise HTTPException(status_code=503, detail=f"Could not verify quota: {exc}")
 
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
 
@@ -92,9 +106,13 @@ def run_feature_processing(
         )
     except (FileNotFoundError, ValueError) as exc:
         release_quota_safely(firestore_client, usage_ref, feature_key, "missing executable / bad params")
+        if bypass_quota_and_storage:
+            audio.cleanup_file(input_path)
         raise HTTPException(status_code=500, detail=str(exc))
     except subprocess.TimeoutExpired as exc:
         release_quota_safely(firestore_client, usage_ref, feature_key, "timeout")
+        if bypass_quota_and_storage:
+            audio.cleanup_file(input_path)
         raise HTTPException(
             status_code=504,
             detail={"error": f"The {error_label} process timed out", "stdout": exc.stdout or "", "stderr": exc.stderr or ""},
@@ -102,6 +120,8 @@ def run_feature_processing(
 
     if completed.returncode != 0:
         release_quota_safely(firestore_client, usage_ref, feature_key, "processing error")
+        if bypass_quota_and_storage:
+            audio.cleanup_file(input_path)
         raise HTTPException(
             status_code=500,
             detail={
@@ -115,38 +135,49 @@ def run_feature_processing(
         )
 
     # --- quota commit ---------------------------------------------------
-    try:
-        files_used = commit_reserved_file(firestore_client.transaction(), usage_ref, feature_key)
-    except Exception as exc:  # noqa: BLE001
-        print(f"Quota commit failed for {uid}/{feature_key}: {exc}")
-        release_quota_safely(firestore_client, usage_ref, feature_key, "commit failure")
-        files_used = None
+    files_used = None
+    if not bypass_quota_and_storage:
+        try:
+            files_used = commit_reserved_file(firestore_client.transaction(), usage_ref, feature_key)
+        except Exception as exc:  # noqa: BLE001
+            print(f"Quota commit failed for {uid}/{feature_key}: {exc}")
+            release_quota_safely(firestore_client, usage_ref, feature_key, "commit failure")
+            files_used = None
 
-    if files_used is not None:
-        log_usage_event(uid, feature_key)
+        if files_used is not None:
+            log_usage_event(uid, feature_key)
 
-    # --- output URL  / TTL cleanup -----------------
+    # --- output: URL + TTL cleanup, or inline bytes + immediate cleanup ----
     output_url = None
+    output_audio_base64 = None
     if os.path.exists(output_path):
-        output_basename = os.path.basename(output_path)
-        download_token = generate_download_token(output_basename)
-        output_url = f"/outputs/{output_basename}?token={download_token}"
-        if not confidential:
-            save_processed_output_record(
-                uid,
-                processed_output_feature_name,
-                output_path,
-                input_path=input_path,
-                original_file_name=file_name,
-            )
-        schedule_file_cleanup(output_path)
+        if bypass_quota_and_storage:
+            with open(output_path, "rb") as handle:
+                output_audio_base64 = base64.b64encode(handle.read()).decode("ascii")
+            audio.cleanup_file(output_path)
+        else:
+            output_basename = os.path.basename(output_path)
+            download_token = generate_download_token(output_basename)
+            output_url = f"/outputs/{output_basename}?token={download_token}"
+            if not confidential:
+                save_processed_output_record(
+                    uid,
+                    processed_output_feature_name,
+                    output_path,
+                    input_path=input_path,
+                    original_file_name=file_name,
+                )
+            schedule_file_cleanup(output_path)
 
-    # Keep the input file around (rather than deleting it immediately) so
-    # the unsatisfied-survey Zoho attachment flow (webhooks.py) can attach
-    # the original submission alongside the output. Same TTL as the output,
-    # so it isn't retained indefinitely if the survey/attachment flow never
-    # fires for this file.
-    schedule_file_cleanup(input_path)
+    if bypass_quota_and_storage:
+        audio.cleanup_file(input_path)
+    else:
+        # Keep the input file around (rather than deleting it immediately) so
+        # the unsatisfied-survey Zoho attachment flow (webhooks.py) can attach
+        # the original submission alongside the output. Same TTL as the
+        # output, so it isn't retained indefinitely if the survey/attachment
+        # flow never fires for this file.
+        schedule_file_cleanup(input_path)
 
     payload = {
         "ok": True,
@@ -162,7 +193,10 @@ def run_feature_processing(
         "max_files": config.MAX_FILES_PER_FEATURE,
         **extra_response_fields,
     }
-    if files_used is None:
+    if bypass_quota_and_storage:
+        payload["output_audio_base64"] = output_audio_base64
+        payload["quota_bypassed"] = True
+    elif files_used is None:
         payload["usage_warning"] = (
             f"{error_label.capitalize()} succeeded, but quota could not be recorded. "
             "Please contact support if this persists."

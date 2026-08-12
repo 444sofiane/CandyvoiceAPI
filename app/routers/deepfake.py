@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request, WebSocke
 from fastapi.responses import StreamingResponse
 
 from app import config
-from app.deps import get_current_uid_rate_limited, verify_websocket_token, check_rate_limit, RateLimitExceededError
+from app.deps import AuthContext, get_current_uid_rate_limited, verify_websocket_token, check_rate_limit, RateLimitExceededError
 from app.services import audio
 from app.services.deepfake_flow import run_deepfake_stream
 from app.services.deepfake_prepare import finalize_deepfake_result, prepare_deepfake_job
@@ -25,7 +25,7 @@ router = APIRouter()
 @router.post("/api/deepfake-detection")
 async def deepfake_detect(
     request: Request,
-    uid: str = Depends(get_current_uid_rate_limited),
+    auth: AuthContext = Depends(get_current_uid_rate_limited),
     x_file_name: str | None = Header(default=None, alias="X-File-Name"),
 ):
     raw_body = await audio.read_limited_upload(request)
@@ -37,14 +37,16 @@ async def deepfake_detect(
     # here on we commit to the streaming response, same as the original —
     # any further failure has to be reported as a {"type": "error"} event
     # inside the stream rather than an HTTP status.
-    job = await asyncio.to_thread(prepare_deepfake_job, uid, raw_body, file_name)
+    job = await asyncio.to_thread(
+        prepare_deepfake_job, auth.uid, raw_body, file_name, auth.auth_method == "api_key"
+    )
 
     async def event_stream():
         cancel_event = threading.Event()
         try:
             async for event in run_deepfake_stream(job["command"], config.SCRIPT_DIR, cancel_event=cancel_event):
                 if event.get("type") == "__done__":
-                    final_event = await asyncio.to_thread(finalize_deepfake_result, event, job, uid)
+                    final_event = await asyncio.to_thread(finalize_deepfake_result, event, job, auth.uid)
                     yield (json.dumps(final_event) + "\n").encode("utf-8")
                     return
                 yield (json.dumps(event) + "\n").encode("utf-8")
