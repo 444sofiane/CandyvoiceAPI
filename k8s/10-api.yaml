@@ -70,7 +70,7 @@ spec:
             claimName: candyvoice-outputs
         - name: firebase-adminsdk
           secret:
-            secretName: candyvoice-firebase-adminsdk
+            secretName: candyvoice-f0ceff8ce151
 
 ---
 apiVersion: v1
@@ -127,10 +127,10 @@ spec:
   ingressClassName: nginx
   tls:
     - hosts:
-        - api.candyvoice.example.com
+        - api.candyvoice.com
       secretName: candyvoice-tls
   rules:
-    - host: api.candyvoice.example.com
+    - host: api.candyvoice.com
       http:
         paths:
           - path: /
