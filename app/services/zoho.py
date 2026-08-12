@@ -25,7 +25,10 @@ def save_processed_output_record(uid, feature, output_path, input_path=None, ori
     `input_path` is optional so older call sites (and any other future
     caller that doesn't have an input file handy) keep working — the
     unsatisfied-webhook flow simply skips attaching an input for docs
-    where it's absent.
+    where it's absent. Symmetrically, `output_path` may be None for a
+    feature that has no processed output of its own (e.g. deepfake
+    detection, which only returns a score) — the webhook flow then
+    attaches just the input.
 
     `original_file_name` is the name the user's browser sent (the
     X-File-Name header), before it gets mangled into
@@ -35,9 +38,11 @@ def save_processed_output_record(uid, feature, output_path, input_path=None, ori
     """
     try:
         client = get_firestore_client()
-        output_basename = os.path.basename(output_path)
-        download_token = generate_download_token(output_basename)
-        download_url = f"/outputs/{output_basename}?token={download_token}"
+        download_url = None
+        if output_path:
+            output_basename = os.path.basename(output_path)
+            download_token = generate_download_token(output_basename)
+            download_url = f"/outputs/{output_basename}?token={download_token}"
 
         client.collection("processedOutputs").add({
             "uid": uid,

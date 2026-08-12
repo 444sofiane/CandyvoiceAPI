@@ -68,6 +68,7 @@ def prepare_deepfake_job(uid: str, raw_body: bytes, file_name: str) -> dict:
         "usage_ref": usage_ref,
         "minutes_needed": minutes_needed,
         "input_path": input_path,
+        "original_file_name": file_name,
     }
 
 
@@ -114,6 +115,9 @@ def finalize_deepfake_result(done_event: dict, job: dict, uid: str) -> dict:
             "error": "Could not parse a deepfake score from the detector's output",
         }
 
+    verdict = "synthetic" if deepfake_percent >= config.DEEPFAKE_THRESHOLD_PERCENT else "genuine"
+    duration_seconds = job["minutes_needed"] * 60
+
     try:
         files_used = commit_reserved_file(firestore_client.transaction(), usage_ref, feature_key)
     except Exception as exc:  # noqa: BLE001
@@ -125,15 +129,34 @@ def finalize_deepfake_result(done_event: dict, job: dict, uid: str) -> dict:
         from app.services.zoho import log_usage_event
         log_usage_event(uid, feature_key)
 
+    # Deepfake detection has no processed audio output of its own — record
+    # just the input so the unsatisfied-survey Zoho flow (webhooks.py) can
+    # attach it to the user's Contact.
+    input_path = job["input_path"]
+    from app.services.downloads import schedule_file_cleanup
+    from app.services.zoho import save_processed_output_record
+
+    save_processed_output_record(
+        uid,
+        feature_key,
+        None,
+        input_path=input_path,
+        original_file_name=job.get("original_file_name"),
+    )
+    # Same TTL used elsewhere for this purpose, so the input isn't retained
+    # indefinitely if the unsatisfied-survey Zoho flow never fires for this
+    # submission (see process_flow.py's identical comment).
+    schedule_file_cleanup(input_path)
+
     result_event = {
         "type": "result",
         "ok": True,
         "exit_code": returncode,
         "deepfake_percent": deepfake_percent,
         "threshold_percent": config.DEEPFAKE_THRESHOLD_PERCENT,
-        "verdict": "synthetic" if deepfake_percent >= config.DEEPFAKE_THRESHOLD_PERCENT else "genuine",
+        "verdict": verdict,
         "uid": uid,
-        "duration_seconds": job["minutes_needed"] * 60,
+        "duration_seconds": duration_seconds,
         "files_used": files_used,
         "max_files": config.MAX_FILES_PER_FEATURE,
     }
