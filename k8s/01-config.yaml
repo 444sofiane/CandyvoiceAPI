@@ -1,0 +1,81 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: candyvoice-config
+  namespace: candyvoice
+data:
+  HOST: "0.0.0.0"
+  PORT: "8001"
+  FIREBASE_PROJECT_ID: "candyvoice"
+  FIREBASE_SERVICE_ACCOUNT_JSON: "/app/secrets/candyvoice-f0ceff8ce151.json"
+  MAX_FILES_PER_FEATURE: "10"
+  MAX_FILE_DURATION_SECONDS: "30"
+  MAX_UPLOAD_SIZE_BYTES: "52428800"  # 50MB — also caps the ws-max-size uvicorn is started with, see docker/Dockerfile.api
+  DEEPFAKE_THRESHOLD_PERCENT: "50"
+  FRAME_RECOVERY_FACTOR_MAX: "0.5"
+  ALLOWED_ORIGINS: "https://candyvoice.com,https://www.candyvoice.com,https://candyvoice.web.app"
+  RATE_LIMIT_MAX_REQUESTS: "5"
+  RATE_LIMIT_WINDOW_SECONDS: "60"
+  DOWNLOAD_TOKEN_TTL_SECONDS: "3600"
+  OUTPUT_FILE_TTL_SECONDS: "3600"
+  MAX_UNSATISFIED_ATTACHMENTS: "20"
+  ZOHO_ACCOUNTS_URL: "https://accounts.zoho.eu"
+  ZOHO_API_DOMAIN: "https://www.zohoapis.eu"
+  ZOHO_REDIRECT_URI: "https://api.candyvoice.com/api/zoho/oauth/callback"
+  SMTP2GO_HOST: "mail.smtp2go.com"
+  SMTP2GO_PORT: "587"
+  SMTP2GO_FROM_EMAIL: "reports@candyvoice.com"
+  SMTP2GO_FROM_NAME: "CandyVoice Reports"
+  ADMIN_EMAILS: "REMPLACE_MOI@candyvoice.com"   # requis: config.py plante au démarrage si absent
+
+---
+# Mockup uniquement — ne remplis JAMAIS ce bloc avec les vraies valeurs et
+# ne le commite pas rempli. Après avoir push ce fichier tel quel, applique
+# les vraies valeurs directement sur le cluster, sans jamais les remettre
+# dans un fichier suivi par git, par exemple :
+#   kubectl create secret generic candyvoice-secrets \
+#     --namespace candyvoice \
+#     --from-literal=DOWNLOAD_TOKEN_SECRET=... \
+#     --from-literal=ZOHO_CLIENT_ID=... \
+#     --from-literal=ZOHO_CLIENT_SECRET=... \
+#     --from-literal=ZOHO_REFRESH_TOKEN=... \
+#     --from-literal=ZOHO_UNSATISFIED_WEBHOOK_SECRET=... \
+#     --from-literal=SMTP2GO_USERNAME=... \
+#     --from-literal=SMTP2GO_PASSWORD=... \
+#     --from-literal=ADMIN_REPORT_RECIPIENTS=...
+# (cette commande crée/remplace le Secret directement dans le cluster —
+# rien de tout ça ne passe par un fichier versionné)
+apiVersion: v1
+kind: Secret
+metadata:
+  name: candyvoice-secrets
+  namespace: candyvoice
+type: Opaque
+stringData:
+  DOWNLOAD_TOKEN_SECRET: "REMPLACE_MOI"
+
+  ZOHO_CLIENT_ID: "REMPLACE_MOI"
+  ZOHO_CLIENT_SECRET: "REMPLACE_MOI"
+  ZOHO_REFRESH_TOKEN: "REMPLACE_MOI"
+  ZOHO_UNSATISFIED_WEBHOOK_SECRET: "REMPLACE_MOI"
+  SMTP2GO_USERNAME: "REMPLACE_MOI"
+  SMTP2GO_PASSWORD: "REMPLACE_MOI"
+  ADMIN_REPORT_RECIPIENTS: "REMPLACE_MOI@candyvoice.com"
+
+---
+# Le JSON de compte de service Firebase va dans un Secret séparé de type
+# fichier (monté en volume, pas en env var) — mêmes raisons que la leçon
+# apprise après la fuite de clé : jamais en clair dans un ConfigMap/env.
+# À créer avec :
+#   kubectl create secret generic candyvoice-firebase-adminsdk \
+#     --from-file=candyvoice-f0ceff8ce151.json=./chemin/vers/ton/fichier.json \
+#     -n candyvoice
+apiVersion: v1
+kind: Secret
+metadata:
+  name: candyvoice-f0ceff8ce151
+  namespace: candyvoice
+type: Opaque
+stringData:
+  candyvoice-f0ceff8ce151.json: |
+    { "REMPLACE_MOI": "avec le vrai contenu, ne commite jamais ce fichier tel quel" }
