@@ -106,4 +106,12 @@ EXPOSE 8001
 HEALTHCHECK --interval=15s --timeout=5s --start-period=20s --retries=3 \
     CMD curl -f http://localhost:8001/health || exit 1
 
-CMD ["python3.11", "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8001", "--workers", "1"]
+# Shell form (not exec-form JSON) so ${MAX_UPLOAD_SIZE_BYTES} can be
+# substituted at container start — kept in sync with the same env var
+# config.py reads, so the transport-level cap on a single WebSocket frame
+# matches the app-level cap enforced on HTTP uploads (see
+# app/services/audio.py's read_limited_upload). `exec` replaces the shell
+# with the uvicorn process instead of running it as a child, so it still
+# becomes PID 1 and receives SIGTERM directly for a clean shutdown.
+CMD exec python3.11 -m uvicorn app.main:app --host 0.0.0.0 --port 8001 --workers 1 \
+    --ws-max-size "${MAX_UPLOAD_SIZE_BYTES:-52428800}"
