@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request
 
 from app import config
 from app.deps import get_current_uid_rate_limited
+from app.services import audio
 from app.services.detector import build_imitation_command
 from app.services.process_flow import run_feature_processing
 
@@ -20,7 +21,7 @@ async def imitation(
     x_confidential_check: str | None = Header(default=None, alias="X-Confidential-Check"),
     x_voice_model: str | None = Header(default=None, alias="X-Voice-Model"),
 ):
-    raw_body = await request.body()
+    raw_body = await audio.read_limited_upload(request)
     query = request.query_params
     file_name = x_file_name or query.get("file_name")
     output_name = x_output_name or query.get("output_file")

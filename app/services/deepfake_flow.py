@@ -36,7 +36,17 @@ def run_deepfake_stream(command, cwd, timeout_seconds=600, cancel_event: threadi
         try:
             detector = _DetectorProcess(command, cwd)
         except Exception as exc:  # noqa: BLE001 - spawn can fail via OSError or a pty backend error
-            q.put({"type": "error", "error": str(exc)})
+            # Emitted as "__done__" (not a standalone "error") so the caller's
+            # normal completion path runs and releases the quota slot that
+            # was reserved before this stream started — a bare "error" event
+            # here was previously silently dropping that reservation forever.
+            q.put({
+                "type": "__done__",
+                "cancelled": False,
+                "timed_out": False,
+                "returncode": None,
+                "full_stdout": f"Failed to start detector: {exc}",
+            })
             q.put(_SENTINEL)
             return
 

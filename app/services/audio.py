@@ -5,8 +5,32 @@ import uuid
 import wave
 
 import filetype
+from fastapi import HTTPException
 
 from app import config
+
+
+async def read_limited_upload(request, max_bytes=None):
+    """Reads an HTTP request body incrementally via `request.stream()`,
+    aborting as soon as it exceeds `max_bytes` — unlike a plain
+    `await request.body()`, which buffers the entire payload in memory
+    (and only then lets the caller find out it was too big), this rejects
+    an oversized upload before it ever gets written to disk.
+
+    Raises HTTPException(413) if the payload is too large.
+    """
+    max_bytes = config.MAX_UPLOAD_SIZE_BYTES if max_bytes is None else max_bytes
+    chunks = []
+    total = 0
+    async for chunk in request.stream():
+        total += len(chunk)
+        if total > max_bytes:
+            raise HTTPException(
+                status_code=413,
+                detail=f"File too large — max {max_bytes // (1024 * 1024)}MB per upload.",
+            )
+        chunks.append(chunk)
+    return b"".join(chunks)
 
 
 def looks_like_audio(payload):

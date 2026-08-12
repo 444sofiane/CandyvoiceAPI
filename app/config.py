@@ -87,6 +87,12 @@ RATE_LIMIT_WINDOW_SECONDS = int(os.environ.get("RATE_LIMIT_WINDOW_SECONDS", "60"
 ALLOWED_AUDIO_MIME_PREFIXES = ("audio/",)
 ALLOWED_AUDIO_MIME_EXTRAS = {"video/mp4"}
 
+# Hard cap on a single upload's size, enforced while the body is still being
+# read (see audio.read_limited_upload) rather than after it's already been
+# buffered in full. Generous enough for an uncompressed, high-bitrate WAV at
+# MAX_FILE_DURATION_SECONDS, while still bounding memory/disk use per upload.
+MAX_UPLOAD_SIZE_BYTES = int(os.environ.get("MAX_UPLOAD_SIZE_BYTES", str(50 * 1024 * 1024)))
+
 # --- Download tokens ----------------------------------------------------
 DOWNLOAD_TOKEN_SECRET = os.environ.get("DOWNLOAD_TOKEN_SECRET")
 if not DOWNLOAD_TOKEN_SECRET:
@@ -127,7 +133,7 @@ ZOHO_UNSATISFIED_WEBHOOK_HEADER = "X-Webhook-Secret"
 ADMIN_EMAILS = {
     email.strip().lower()
     for email in os.environ.get(
-        "ADMIN_EMAILS"
+        "ADMIN_EMAILS", "jl.crebouw@candyvoice.com"
     ).split(",")
     if email.strip()
 }

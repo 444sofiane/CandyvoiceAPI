@@ -81,11 +81,12 @@ async def zoho_unsatisfied_webhook(
     {"firebase_uid": "...", "X-Webhook-Secret": "..."}. Server-to-server,
     gated by a shared secret.
 
-    Uploads every pending (not yet uploaded, non-confidential) processed
-    file for this user as Zoho Attachments — both the input the user
-    submitted and the output CandyVoice produced, wherever each still
-    exists on disk — rather than only the single most recent output.
-    Capped per call at config.MAX_UNSATISFIED_ATTACHMENTS docs.
+    The payload doesn't identify which file/feature the survey response
+    was actually about, so rather than uploading every pending file this
+    user has ever submitted, this only uploads their single most recent
+    not-yet-uploaded, non-confidential processed file — input and output
+    (wherever each still exists on disk) — as Zoho Attachments, as the
+    closest available proxy for "the file they were just asked about".
     """
     try:
         body = await request.json()
@@ -112,7 +113,7 @@ async def zoho_unsatisfied_webhook(
         raise HTTPException(status_code=503, detail=str(exc))
 
     try:
-        docs = get_unuploaded_outputs(firestore_client, firebase_uid)
+        docs = get_unuploaded_outputs(firestore_client, firebase_uid, limit=1)
     except Exception as exc:  # noqa: BLE001 - most likely a missing composite index
         print(f"processedOutputs query failed for {firebase_uid}: {exc}")
         raise HTTPException(

@@ -7,6 +7,7 @@ from fastapi.responses import StreamingResponse
 
 from app import config
 from app.deps import get_current_uid_rate_limited, verify_websocket_token, check_rate_limit, RateLimitExceededError
+from app.services import audio
 from app.services.deepfake_flow import run_deepfake_stream
 from app.services.deepfake_prepare import finalize_deepfake_result, prepare_deepfake_job
 
@@ -27,7 +28,7 @@ async def deepfake_detect(
     uid: str = Depends(get_current_uid_rate_limited),
     x_file_name: str | None = Header(default=None, alias="X-File-Name"),
 ):
-    raw_body = await request.body()
+    raw_body = await audio.read_limited_upload(request)
     file_name = x_file_name or request.query_params.get("file_name")
     if not file_name:
         raise HTTPException(status_code=400, detail="X-File-Name header (or file_name param) is required")
@@ -134,6 +135,19 @@ async def deepfake_ws(ws: WebSocket):
         await ws.close(code=WS_POLICY_VIOLATION)
         return
 
+    # A WebSocket binary frame arrives as one already-buffered message —
+    # there's no streaming/early-abort option here like the HTTP routes
+    # have via request.stream(), so the best available guard is rejecting
+    # it immediately, before it's written to disk or a quota slot is
+    # reserved for it.
+    if len(raw_body) > config.MAX_UPLOAD_SIZE_BYTES:
+        await ws.send_json({
+            "type": "error",
+            "error": f"File too large — max {config.MAX_UPLOAD_SIZE_BYTES // (1024 * 1024)}MB per upload.",
+        })
+        await ws.close(code=1009)  # 1009 = "Message Too Big"
+        return
+
     # --- prepare (upload/duration/quota/command) ------------------------
     try:
         job = await asyncio.to_thread(prepare_deepfake_job, uid, raw_body, file_name)
@@ -145,18 +159,33 @@ async def deepfake_ws(ws: WebSocket):
 
     # --- run + stream progress ------------------------------------------
     cancel_event = threading.Event()
-    try:
-        async for event in run_deepfake_stream(job["command"], config.SCRIPT_DIR, cancel_event=cancel_event):
-            if event.get("type") == "__done__":
-                final_event = await asyncio.to_thread(finalize_deepfake_result, event, job, uid)
-                await ws.send_json(final_event)
-                break
-            await ws.send_json(event)
-    except WebSocketDisconnect:
-        # Client went away mid-stream: cancel the subprocess and release
-        # the reserved quota slot, mirroring the HTTP route's
-        # close_connection handling.
-        cancel_event.set()
-        return
+    disconnected = False
+    async for event in run_deepfake_stream(job["command"], config.SCRIPT_DIR, cancel_event=cancel_event):
+        if event.get("type") == "__done__":
+            # Always run this — even post-disconnect — so the quota slot
+            # reserved for this job gets released/committed. Previously,
+            # a WebSocketDisconnect here `return`ed immediately without
+            # draining to "__done__", leaking the reservation forever.
+            final_event = await asyncio.to_thread(finalize_deepfake_result, event, job, uid)
+            if not disconnected:
+                try:
+                    await ws.send_json(final_event)
+                except WebSocketDisconnect:
+                    pass
+            break
 
-    await ws.close()
+        if disconnected:
+            continue
+
+        try:
+            await ws.send_json(event)
+        except WebSocketDisconnect:
+            # Client went away mid-stream: cancel the subprocess and keep
+            # draining the stream (without trying to send further) until
+            # "__done__" arrives, so the reservation above still gets
+            # released/committed.
+            disconnected = True
+            cancel_event.set()
+
+    if not disconnected:
+        await ws.close()
