@@ -6,7 +6,7 @@ first three, plus a streaming HTTP endpoint and a WebSocket for detection
 progress.
 
 - **Base URL:** `https://api.candyvoice.com`
-- **Auth:** Firebase ID token
+- **Auth:** Firebase ID token, or an API key for server-to-server use — see [API_KEYS.md](API_KEYS.md)
 - **Format:** raw audio bytes in, JSON out
 
 ## Overview
@@ -25,13 +25,22 @@ progress on longer clips.
 
 ## Authentication
 
-There are no API keys. Every call is tied to a signed-in CandyVoice user:
-authenticate with Firebase Authentication in the CandyVoice project, then
-send that user's ID token as a bearer token. Usage, quota, and rate limiting
-are all tracked per user ID (`uid`), not per app.
+Every call is tied to a signed-in CandyVoice user, one of two ways:
+
+- **Firebase ID token** (the web UI's normal auth) — authenticate with
+  Firebase Authentication in the CandyVoice project, then send that user's
+  ID token as a bearer token. Usage, quota, and rate limiting are tracked
+  per user ID (`uid`).
+- **API key** — for calling from your own backend/app instead of a browser
+  session. Behaves differently in a few ways (quota is bypassed, no files
+  are retained server-side) — see [API_KEYS.md](API_KEYS.md) for how to
+  get one and what changes.
 
 ```http
 Authorization: Bearer <firebase_id_token>
+```
+```http
+X-API-Key: cvk_...
 ```
 
 > The WebSocket endpoint can't carry a browser `Authorization` header on its
