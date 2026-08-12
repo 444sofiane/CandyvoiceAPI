@@ -32,9 +32,11 @@ Every call is tied to a signed-in CandyVoice user, one of two ways:
   ID token as a bearer token. Usage, quota, and rate limiting are tracked
   per user ID (`uid`).
 - **API key** — for calling from your own backend/app instead of a browser
-  session. Behaves differently in a few ways (quota is bypassed, no files
-  are retained server-side) — see [API_KEYS.md](API_KEYS.md) for how to
-  get one and what changes.
+  session. Behaves differently in a few ways (quota/rate-limit follow a
+  chosen plan instead of the flat limits below, no files are retained
+  server-side, processed audio comes back as raw bytes instead of a
+  download URL) — see [API_KEYS.md](API_KEYS.md) for how to get one and
+  what changes.
 
 ```http
 Authorization: Bearer <firebase_id_token>
