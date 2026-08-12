@@ -33,6 +33,14 @@ app.add_middleware(
         "X-Frame-Recovery-Factor", "X-Confidential-Check", "Authorization",
         "X-API-Key",
     ],
+    # Browsers hide all response headers from JS by default except a small
+    # "simple" set (Content-Type etc.) — without this, the X-* metadata
+    # headers on the API-key binary response (see process_flow.py) would be
+    # sent but unreadable by fetch()/XHR from an allowed origin.
+    expose_headers=[
+        "X-Exit-Code", "X-Uid", "X-Duration-Seconds", "X-Files-Used",
+        "X-Max-Files", "X-Plan", "X-Voice-Model", "X-Frame-Recovery-Factor",
+    ],
 )
 
 

@@ -10,12 +10,11 @@ subprocess.run are both blocking) — FastAPI routers call it via
 asyncio.to_thread so the event loop stays free for other requests/websockets
 meanwhile.
 """
-import base64
 import os
 import subprocess
 import wave
 
-from fastapi import HTTPException
+from fastapi import HTTPException, Response
 
 from app import config
 from app.deps import AuthContext
@@ -24,6 +23,12 @@ from app.services.downloads import generate_download_token, schedule_file_cleanu
 from app.services.firebase import FirestoreUnavailableError, get_firestore_client
 from app.services.zoho import save_processed_output_record, sync_confidential_flag_to_zoho, log_usage_event
 from app.services.quota import QuotaExceededError, commit_reserved_file, release_quota_safely, reserve_usage_file
+
+
+def _header_name(key: str) -> str:
+    """"voice_model" -> "Voice-Model", for turning extra_response_fields
+    into response headers on the binary API-key path."""
+    return "-".join(word.capitalize() for word in key.split("_"))
 
 
 def run_feature_processing(
@@ -38,7 +43,7 @@ def run_feature_processing(
     build_command,  # callable(input_path, output_path) -> list[str]
     extra_response_fields: dict | None = None,
     error_label: str,
-) -> dict:
+) -> dict | Response:
     """For an API-key caller (`auth.auth_method == "api_key"`), quota is
     checked against that key's plan allowance for the current calendar
     month (api_key_quota.py) rather than the website's flat lifetime
@@ -46,9 +51,17 @@ def run_feature_processing(
     data rather than ours, nothing is persisted to Firestore or synced to
     Zoho, and both the uploaded input and the processed output are deleted
     from local disk immediately after the response is built (rather than
-    kept around on a TTL) — the output is returned inline as base64
-    instead of via a downloadable /outputs/ URL, since there's no file
-    left to serve by the time the response is sent.
+    kept around on a TTL).
+
+    That API-key path also returns a different *shape* of response: the
+    processed audio comes back as the raw binary response body
+    (`audio/wav`) with metadata in `X-*` headers, instead of the
+    Firebase-session path's JSON envelope with an `output_url` — returning
+    it inline as base64 JSON was tried first, but base64's ~33% size
+    inflation on top of an already-uncompressed WAV made responses balloon
+    to tens of MB for longer clips. Errors still come back as JSON either
+    way (raised as HTTPException, same as always) — only the success
+    response for these three routes differs by auth method.
     """
     uid = auth.uid
     is_api_key = auth.auth_method == "api_key"
@@ -154,37 +167,65 @@ def run_feature_processing(
     if files_used is not None and not is_api_key:
         log_usage_event(uid, feature_key)
 
-    # --- output: URL + TTL cleanup, or inline bytes + immediate cleanup ----
-    output_url = None
-    output_audio_base64 = None
-    if os.path.exists(output_path):
-        if is_api_key:
-            with open(output_path, "rb") as handle:
-                output_audio_base64 = base64.b64encode(handle.read()).decode("ascii")
-            audio.cleanup_file(output_path)
-        else:
-            output_basename = os.path.basename(output_path)
-            download_token = generate_download_token(output_basename)
-            output_url = f"/outputs/{output_basename}?token={download_token}"
-            if not confidential:
-                save_processed_output_record(
-                    uid,
-                    processed_output_feature_name,
-                    output_path,
-                    input_path=input_path,
-                    original_file_name=file_name,
-                )
-            schedule_file_cleanup(output_path)
-
+    # --- API-key path: raw binary body + headers, immediate cleanup -------
     if is_api_key:
+        if not os.path.exists(output_path):
+            # Shouldn't normally happen for a successful run of these three
+            # features, but there's nothing to serve as a binary body — fall
+            # back to a plain JSON envelope rather than an empty response.
+            audio.cleanup_file(input_path)
+            return {
+                "ok": True,
+                "exit_code": completed.returncode,
+                "output_url": None,
+                "uid": uid,
+                "duration_seconds": duration_seconds,
+                "files_used": files_used,
+                "max_files": max_files,
+                "plan": auth.plan,
+                **extra_response_fields,
+            }
+
+        with open(output_path, "rb") as handle:
+            output_bytes = handle.read()
+        audio.cleanup_file(output_path)
         audio.cleanup_file(input_path)
-    else:
-        # Keep the input file around (rather than deleting it immediately) so
-        # the unsatisfied-survey Zoho attachment flow (webhooks.py) can attach
-        # the original submission alongside the output. Same TTL as the
-        # output, so it isn't retained indefinitely if the survey/attachment
-        # flow never fires for this file.
-        schedule_file_cleanup(input_path)
+
+        headers = {
+            "X-Exit-Code": str(completed.returncode),
+            "X-Uid": uid,
+            "X-Duration-Seconds": str(duration_seconds),
+            "X-Files-Used": "" if files_used is None else str(files_used),
+            "X-Max-Files": "" if max_files is None else str(max_files),
+            "X-Plan": auth.plan or "",
+        }
+        for field_name, value in extra_response_fields.items():
+            headers[f"X-{_header_name(field_name)}"] = str(value)
+
+        return Response(content=output_bytes, media_type="audio/wav", headers=headers)
+
+    # --- Firebase-session path: JSON envelope + downloadable URL ----------
+    output_url = None
+    if os.path.exists(output_path):
+        output_basename = os.path.basename(output_path)
+        download_token = generate_download_token(output_basename)
+        output_url = f"/outputs/{output_basename}?token={download_token}"
+        if not confidential:
+            save_processed_output_record(
+                uid,
+                processed_output_feature_name,
+                output_path,
+                input_path=input_path,
+                original_file_name=file_name,
+            )
+        schedule_file_cleanup(output_path)
+
+    # Keep the input file around (rather than deleting it immediately) so
+    # the unsatisfied-survey Zoho attachment flow (webhooks.py) can attach
+    # the original submission alongside the output. Same TTL as the
+    # output, so it isn't retained indefinitely if the survey/attachment
+    # flow never fires for this file.
+    schedule_file_cleanup(input_path)
 
     payload = {
         "ok": True,
@@ -200,10 +241,7 @@ def run_feature_processing(
         "max_files": max_files,
         **extra_response_fields,
     }
-    if is_api_key:
-        payload["output_audio_base64"] = output_audio_base64
-        payload["plan"] = auth.plan
-    elif files_used is None:
+    if files_used is None:
         payload["usage_warning"] = (
             f"{error_label.capitalize()} succeeded, but quota could not be recorded. "
             "Please contact support if this persists."

@@ -19,7 +19,7 @@ behavior, not just how you authenticate:
 |---|---|---|
 | Quota (`files_used`/`max_files`) | Flat lifetime cap (10 files/feature, no reset) | **Per-key, per calendar month, per plan** — see [Plans](#plans--limits) |
 | Rate limit | 5 req/60s, shared across all your Firebase-session calls | Per-key, per plan (5–100 req/60s) — see [Plans](#plans--limits) |
-| Output delivery | `output_url` (download link, file kept ~1h) | `output_audio_base64` inline in the response; **no file is kept on the server** |
+| Response shape | JSON envelope, `output_url` download link (file kept ~1h) | **Raw audio bytes as the response body** (`audio/wav`), metadata in headers; no file kept on the server — see [below](#using-a-key-against-the-processing-endpoints) |
 | Processed-outputs history / Zoho sync | Saved | **Skipped entirely** — nothing is persisted or synced |
 | Uploaded input file | Kept briefly (Zoho attachment flow) | **Deleted immediately** after the response is built |
 
@@ -193,37 +193,68 @@ Swap `Authorization: Bearer ...` for `X-API-Key`, on any of `/api/noise-filter`,
 `/api/imitation`, `/api/frame-recovery`, `/api/deepfake-detect` (not the
 `/ws/deepfake` WebSocket — that one's browser-only and stays Firebase-only).
 
+### Noise filter / imitation / frame recovery — raw audio, not JSON
+
+These three produce a processed audio file. With a key, a successful
+response is the **raw audio bytes as the HTTP body** (`Content-Type:
+audio/wav`), not a JSON envelope — metadata rides along in response
+headers instead of JSON fields:
+
 ```bash
 curl -X POST https://api.candyvoice.com/api/noise-filter \
   -H "X-API-Key: cvk_wK8h2s9F3n...Qz" \
   -H "X-File-Name: meeting.wav" \
-  --data-binary @meeting.wav
+  --data-binary @meeting.wav \
+  -o filtered.wav -D -
 ```
 
-Response — same envelope as [`API.md`'s response shape](API.md#response-shape),
-except `output_url` is `null` and the processed audio comes back inline:
-
-```json
-{
-  "ok": true,
-  "exit_code": 0,
-  "output_url": null,
-  "output_audio_base64": "UklGRi...<base64 wav bytes>...",
-  "plan": "pro",
-  "uid": "uid123",
-  "duration_seconds": 18.2,
-  "files_used": 13,
-  "max_files": 500,
-  "stdout": "...",
-  "stderr": ""
-}
+```
+HTTP/1.1 200 OK
+Content-Type: audio/wav
+X-Exit-Code: 0
+X-Uid: uid123
+X-Duration-Seconds: 18.2
+X-Files-Used: 13
+X-Max-Files: 500
+X-Plan: pro
+<...raw WAV bytes...>
 ```
 
-Decode `output_audio_base64` client-side to get the processed file — there
-is nothing to download from `/outputs/` in this mode, since the file was
-deleted right after this response was built. `files_used`/`max_files` here
-are this key's count for the current calendar month on this specific
-feature — see [Plans & limits](#plans--limits).
+Why not JSON with the audio base64-encoded inline, like an earlier version
+of this endpoint did? Base64 adds ~33% size overhead on top of an already
+uncompressed WAV — for a full 30-second clip that pushed some responses
+into the tens-of-megabytes range, which is painful for both server memory
+and client-side JSON parsing. Raw bytes avoid that entirely and let you
+stream/save the response directly (`-o filtered.wav` above, or
+`response.arrayBuffer()` in JS).
+
+`/api/imitation` and `/api/frame-recovery` add their own extra header —
+`X-Voice-Model` / `X-Frame-Recovery-Factor` respectively — mirroring the
+`voice_model` / `frame_recovery_factor` extra fields those two add to the
+JSON envelope on the Firebase-session path.
+
+`X-Files-Used` / `X-Max-Files` are this key's count for the current
+calendar month on this specific feature — see [Plans & limits](#plans--limits).
+There's nothing to download from `/outputs/` in this mode: the file was
+deleted from disk right after this response was built.
+
+**Errors still come back as JSON** (`{"error": "..."}` or a richer object
+with `stdout`/`stderr`), exactly as documented in
+[`API.md`](API.md#errors-quotas--rate-limits) — only the success response
+differs by auth method, not the failure shape.
+
+### Deepfake detection — unchanged NDJSON stream
+
+`/api/deepfake-detect` has no processed audio output of its own (just a
+score), so it's unaffected by the above — same streaming NDJSON shape as
+[`API.md`](API.md#post-apideepfake-detect) either way. With a key, the
+final `result` event's `files_used`/`max_files` reflect that key's
+monthly plan allowance instead of the website's lifetime cap, and it
+carries a `"plan"` field:
+
+```jsonl
+{"type": "result", "ok": true, "exit_code": 0, "deepfake_percent": 3.1, "threshold_percent": 50.0, "verdict": "genuine", "uid": "uid123", "duration_seconds": 12.4, "files_used": 4, "max_files": 500, "plan": "pro"}
+```
 
 ## Errors specific to keys
 
