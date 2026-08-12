@@ -23,7 +23,7 @@ async def get_output(output_name: str, token: str | None = None, authorization: 
     if not authorized and authorization:
         decoded_token = _verify_bearer_token(authorization)
         uid = decoded_token.get("uid")
-        authorized = safe_output_name.startswith(f"{uid}_")
+        authorized = safe_output_name.split("_", 1)[0] == uid
 
     if not authorized:
         # 404, not 403 — don't confirm a file exists when it isn't
