@@ -1,4 +1,4 @@
-"""Shared FastAPI dependencies: Firebase auth + API-key auth + per-uid rate
+"""Shared FastAPI dependencies: Firebase auth + API-key auth + rate
 limiting. Replaces the repeated _authenticate_request / check_rate_limit
 calls at the top of every handler in api_server.py with a single reusable
 dependency.
@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from fastapi import Depends, Header, HTTPException, Request
 
 from app import config
+from app.services.api_key_quota import plan_rate_limit
 from app.services.api_keys import resolve_api_key
 from app.services.firebase import FirestoreUnavailableError, verify_firebase_id_token
 
@@ -18,32 +19,42 @@ from app.services.firebase import FirestoreUnavailableError, verify_firebase_id_
 class AuthContext:
     uid: str
     auth_method: str  # "firebase" | "api_key"
+    key_id: str | None = None
+    plan: str | None = None
+
 
 _rate_limit_lock = threading.Lock()
-_recent_requests_by_uid = {}  # uid -> list[timestamp]
+_recent_requests_by_bucket = {}  # bucket key -> list[timestamp]
 
 
 class RateLimitExceededError(Exception):
     pass
 
 
-def check_rate_limit(uid: str):
-    """Raises RateLimitExceededError if `uid` has made too many submissions
-    in the current rolling window. Thread-safe: FastAPI/Starlette may run
-    sync dependencies in a thread pool, same as ThreadingHTTPServer did."""
+def check_rate_limit(bucket_key: str, max_requests: int | None = None, window_seconds: int | None = None):
+    """Raises RateLimitExceededError if `bucket_key` has made too many
+    submissions in the current rolling window. `bucket_key` is a plain uid
+    for the Firebase-session path, or "apikey:<key_id>" for API-key
+    callers — each key gets its own independent budget sized to its plan,
+    rather than sharing one bucket with that user's browser session (which
+    might be on a different limit entirely). Thread-safe: FastAPI/Starlette
+    may run sync dependencies in a thread pool, same as
+    ThreadingHTTPServer did."""
+    max_requests = config.RATE_LIMIT_MAX_REQUESTS if max_requests is None else max_requests
+    window_seconds = config.RATE_LIMIT_WINDOW_SECONDS if window_seconds is None else window_seconds
+
     now = time.monotonic()
-    cutoff = now - config.RATE_LIMIT_WINDOW_SECONDS
+    cutoff = now - window_seconds
 
     with _rate_limit_lock:
-        timestamps = [t for t in _recent_requests_by_uid.get(uid, []) if t > cutoff]
-        if len(timestamps) >= config.RATE_LIMIT_MAX_REQUESTS:
-            _recent_requests_by_uid[uid] = timestamps
+        timestamps = [t for t in _recent_requests_by_bucket.get(bucket_key, []) if t > cutoff]
+        if len(timestamps) >= max_requests:
+            _recent_requests_by_bucket[bucket_key] = timestamps
             raise RateLimitExceededError(
-                f"Too many requests — max {config.RATE_LIMIT_MAX_REQUESTS} per "
-                f"{config.RATE_LIMIT_WINDOW_SECONDS}s. Try again shortly."
+                f"Too many requests — max {max_requests} per {window_seconds}s. Try again shortly."
             )
         timestamps.append(now)
-        _recent_requests_by_uid[uid] = timestamps
+        _recent_requests_by_bucket[bucket_key] = timestamps
 
 
 def _verify_bearer_token(authorization: str) -> dict:
@@ -89,18 +100,18 @@ async def get_current_auth(
     x_api_key: str | None = Header(default=None, alias="X-API-Key"),
 ) -> AuthContext:
     """Accepts either an API key (X-API-Key header — for server-to-server
-    callers with their own application, issued via /api/admin/api-keys) or
-    a Firebase ID token (Authorization: Bearer ...). The API key takes
-    precedence when both are present, since a caller using one wouldn't be
-    expected to send the other."""
+    callers with their own application, issued via /api/keys) or a Firebase
+    ID token (Authorization: Bearer ...). The API key takes precedence when
+    both are present, since a caller using one wouldn't be expected to send
+    the other."""
     if x_api_key:
         try:
-            uid = resolve_api_key(x_api_key)
+            record = resolve_api_key(x_api_key)
         except FirestoreUnavailableError as exc:
             raise HTTPException(status_code=503, detail=str(exc))
-        if not uid:
+        if not record:
             raise HTTPException(status_code=401, detail="Invalid or revoked API key")
-        return AuthContext(uid=uid, auth_method="api_key")
+        return AuthContext(uid=record.uid, auth_method="api_key", key_id=record.key_id, plan=record.plan)
 
     decoded_token = _verify_bearer_token(authorization)
     return AuthContext(uid=decoded_token.get("uid"), auth_method="firebase")
@@ -109,12 +120,18 @@ async def get_current_auth(
 async def get_current_uid_rate_limited(auth: AuthContext = Depends(get_current_auth)) -> AuthContext:
     """Combines auth + rate limiting into one dependency, mirroring
     NoiseFilterHandler._authenticate_and_rate_limit(). Use this as the
-    dependency on every feature-processing route. Rate limiting applies to
-    both auth methods alike, keyed by uid — quota/storage/Zoho-sync
-    bypassing for API-key callers is a separate decision made downstream by
-    each route, based on `auth.auth_method`."""
+    dependency on every feature-processing route. API-key callers are
+    rate-limited per key, at their plan's budget; Firebase-session callers
+    keep the flat global budget, per uid."""
+    if auth.auth_method == "api_key":
+        max_requests, window_seconds = plan_rate_limit(auth.plan)
+        bucket_key = f"apikey:{auth.key_id}"
+    else:
+        max_requests, window_seconds = None, None
+        bucket_key = auth.uid
+
     try:
-        check_rate_limit(auth.uid)
+        check_rate_limit(bucket_key, max_requests, window_seconds)
     except RateLimitExceededError as exc:
         raise HTTPException(status_code=429, detail=str(exc))
 

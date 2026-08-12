@@ -48,7 +48,7 @@ async def frame_recovery(
 
     payload = await asyncio.to_thread(
         run_feature_processing,
-        uid=auth.uid,
+        auth=auth,
         raw_body=raw_body,
         file_name=file_name,
         output_name=output_name,
@@ -58,6 +58,5 @@ async def frame_recovery(
         build_command=build_command,
         extra_response_fields={"frame_recovery_factor": frame_recovery_factor},
         error_label="frame recovery",
-        bypass_quota_and_storage=(auth.auth_method == "api_key"),
     )
     return payload

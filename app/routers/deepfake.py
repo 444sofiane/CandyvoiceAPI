@@ -37,9 +37,7 @@ async def deepfake_detect(
     # here on we commit to the streaming response, same as the original —
     # any further failure has to be reported as a {"type": "error"} event
     # inside the stream rather than an HTTP status.
-    job = await asyncio.to_thread(
-        prepare_deepfake_job, auth.uid, raw_body, file_name, auth.auth_method == "api_key"
-    )
+    job = await asyncio.to_thread(prepare_deepfake_job, auth, raw_body, file_name)
 
     async def event_stream():
         cancel_event = threading.Event()
@@ -151,8 +149,10 @@ async def deepfake_ws(ws: WebSocket):
         return
 
     # --- prepare (upload/duration/quota/command) ------------------------
+    # WS auth is Firebase-only (see module docstring) — no API key path here.
+    auth = AuthContext(uid=uid, auth_method="firebase")
     try:
-        job = await asyncio.to_thread(prepare_deepfake_job, uid, raw_body, file_name)
+        job = await asyncio.to_thread(prepare_deepfake_job, auth, raw_body, file_name)
     except HTTPException as exc:
         detail = exc.detail if isinstance(exc.detail, dict) else {"error": exc.detail}
         await ws.send_json({"type": "error", **detail})

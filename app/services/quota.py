@@ -37,13 +37,13 @@ def read_feature_usage_fields(snapshot, feature_key):
     return files_used, files_reserved
 
 
-def _reserve_usage_file_impl(transaction, usage_ref, feature_key):
+def _reserve_usage_file_impl(transaction, usage_ref, feature_key, max_files):
     snapshot = usage_ref.get(transaction=transaction)
     files_used, files_reserved = read_feature_usage_fields(snapshot, feature_key)
 
-    if files_used + files_reserved >= config.MAX_FILES_PER_FEATURE:
+    if max_files is not None and files_used + files_reserved >= max_files:
         raise QuotaExceededError(
-            f"You've used all {config.MAX_FILES_PER_FEATURE} files allowed for this feature."
+            f"You've used all {max_files} files allowed for this feature."
         )
 
     new_reserved = files_reserved + 1
@@ -55,8 +55,13 @@ def _reserve_usage_file_impl(transaction, usage_ref, feature_key):
     return {"filesUsed": files_used, "filesReserved": new_reserved}
 
 
-def reserve_usage_file(transaction, usage_ref, feature_key):
-    return firestore.transactional(_reserve_usage_file_impl)(transaction, usage_ref, feature_key)
+def reserve_usage_file(transaction, usage_ref, feature_key, max_files):
+    """`max_files` is the caller's responsibility to supply explicitly —
+    the website's Firebase-session path passes config.MAX_FILES_PER_FEATURE
+    (a flat lifetime cap), while the API-key path (api_key_quota.py) passes
+    that key's plan allowance for the current calendar month, or None for
+    an unlimited plan."""
+    return firestore.transactional(_reserve_usage_file_impl)(transaction, usage_ref, feature_key, max_files)
 
 
 def _release_reserved_file_impl(transaction, usage_ref, feature_key):

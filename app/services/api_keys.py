@@ -6,23 +6,38 @@ lookup on every request), mirroring how a password would be stored.
 """
 import hashlib
 import secrets
+from dataclasses import dataclass
 
 from firebase_admin import firestore as admin_firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
 
+from app import config
 from app.services.firebase import get_firestore_client
 
 _COLLECTION = "apiKeys"
+
+
+@dataclass
+class ApiKeyRecord:
+    key_id: str
+    uid: str
+    plan: str
 
 
 def _hash_key(raw_key: str) -> str:
     return hashlib.sha256(raw_key.encode("utf-8")).hexdigest()
 
 
-def create_api_key(uid: str, label: str | None = None) -> tuple[str, str]:
-    """Generates a new key for `uid`, stores its hash, and returns
-    (raw_key, key_id). `raw_key` is never persisted — capture it now, it
-    cannot be recovered later."""
+def create_api_key(uid: str, label: str | None = None, plan: str = config.DEFAULT_API_KEY_PLAN) -> tuple[str, str]:
+    """Generates a new key for `uid` on `plan`, stores its hash, and
+    returns (raw_key, key_id). `raw_key` is never persisted — capture it
+    now, it cannot be recovered later.
+
+    Raises ValueError if `plan` isn't a known tier — callers should turn
+    that into a 400, not let it become an opaque 500."""
+    if plan not in config.API_KEY_PLANS:
+        raise ValueError(f"Unknown plan {plan!r} — expected one of {sorted(config.API_KEY_PLANS)}")
+
     raw_key = f"cvk_{secrets.token_urlsafe(32)}"
     key_id = _hash_key(raw_key)
 
@@ -30,6 +45,7 @@ def create_api_key(uid: str, label: str | None = None) -> tuple[str, str]:
     client.collection(_COLLECTION).document(key_id).set({
         "uid": uid,
         "label": label,
+        "plan": plan,
         "createdAt": admin_firestore.SERVER_TIMESTAMP,
         "revoked": False,
         "revokedAt": None,
@@ -38,8 +54,8 @@ def create_api_key(uid: str, label: str | None = None) -> tuple[str, str]:
     return raw_key, key_id
 
 
-def resolve_api_key(raw_key: str) -> str | None:
-    """Returns the owning uid for a valid, non-revoked key, or None.
+def resolve_api_key(raw_key: str) -> ApiKeyRecord | None:
+    """Returns the ApiKeyRecord for a valid, non-revoked key, or None.
     Raises FirestoreUnavailableError if Firestore itself isn't reachable —
     that's a server config problem, not "invalid key", so the caller should
     surface it as a 503 rather than a 401."""
@@ -64,24 +80,45 @@ def resolve_api_key(raw_key: str) -> str | None:
     except Exception as exc:  # noqa: BLE001 - best-effort bookkeeping only
         print(f"Could not update lastUsedAt for api key {doc.id}: {exc}")
 
-    return uid
+    plan = data.get("plan") or config.DEFAULT_API_KEY_PLAN
+    return ApiKeyRecord(key_id=doc.id, uid=uid, plan=plan)
 
 
 def list_api_keys_for_uid(uid: str) -> list[dict]:
     """Returns metadata (never the raw key, which was never stored) for
-    every key issued to `uid`, for display in an admin tool."""
+    every key issued to `uid`, for display on an account/keys page."""
     client = get_firestore_client()
     query = client.collection(_COLLECTION).where(filter=FieldFilter("uid", "==", uid))
     return [
         {
             "key_id": doc.id,
             "label": doc.to_dict().get("label"),
+            "plan": doc.to_dict().get("plan") or config.DEFAULT_API_KEY_PLAN,
             "createdAt": doc.to_dict().get("createdAt"),
             "lastUsedAt": doc.to_dict().get("lastUsedAt"),
             "revoked": bool(doc.to_dict().get("revoked")),
         }
         for doc in query.stream()
     ]
+
+
+def get_api_key_for_owner(key_id: str, owner_uid: str) -> dict | None:
+    """Fetches one key's metadata, scoped to its owner — returns None if
+    the key doesn't exist or belongs to someone else (never distinguishes
+    the two, same reasoning as revoke_api_key's owner_uid check)."""
+    client = get_firestore_client()
+    doc = client.collection(_COLLECTION).document(key_id).get()
+    if not doc.exists:
+        return None
+    data = doc.to_dict()
+    if data.get("uid") != owner_uid:
+        return None
+    return {
+        "key_id": doc.id,
+        "label": data.get("label"),
+        "plan": data.get("plan") or config.DEFAULT_API_KEY_PLAN,
+        "revoked": bool(data.get("revoked")),
+    }
 
 
 def revoke_api_key(key_id: str, owner_uid: str | None = None) -> bool:
@@ -102,4 +139,19 @@ def revoke_api_key(key_id: str, owner_uid: str | None = None) -> bool:
     if owner_uid is not None and snapshot.to_dict().get("uid") != owner_uid:
         return False
     ref.update({"revoked": True, "revokedAt": admin_firestore.SERVER_TIMESTAMP})
+    return True
+
+
+def set_api_key_plan(key_id: str, plan: str) -> bool:
+    """Admin-only: changes a key's plan (e.g. after a manual Enterprise
+    negotiation, or a support-handled upgrade/downgrade). Returns False if
+    no such key exists. Raises ValueError for an unknown plan."""
+    if plan not in config.API_KEY_PLANS:
+        raise ValueError(f"Unknown plan {plan!r} — expected one of {sorted(config.API_KEY_PLANS)}")
+
+    client = get_firestore_client()
+    ref = client.collection(_COLLECTION).document(key_id)
+    if not ref.get().exists:
+        return False
+    ref.update({"plan": plan})
     return True

@@ -36,7 +36,7 @@ async def noise_filter(
 
     payload = await asyncio.to_thread(
         run_feature_processing,
-        uid=auth.uid,
+        auth=auth,
         raw_body=raw_body,
         file_name=file_name,
         output_name=output_name,
@@ -45,6 +45,5 @@ async def noise_filter(
         processed_output_feature_name="noise-filter",
         build_command=build_command,
         error_label="noise filter",
-        bypass_quota_and_storage=(auth.auth_method == "api_key"),
     )
     return payload

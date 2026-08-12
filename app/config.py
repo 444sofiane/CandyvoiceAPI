@@ -123,6 +123,37 @@ ZOHO_REDIRECT_URI = os.environ.get(
 ZOHO_UNSATISFIED_WEBHOOK_SECRET = os.environ.get("ZOHO_UNSATISFIED_WEBHOOK_SECRET")
 ZOHO_UNSATISFIED_WEBHOOK_HEADER = "X-Webhook-Secret"
 
+# --- API key plans (SaaS pricing tiers) ------------------------------------
+# Placeholder numbers matching the pricing page's provisional "$X"/"$Y"
+# tiers — tune freely, nothing else depends on the exact values.
+# "files_per_feature_per_month" mirrors the pricing page's "X fichiers
+# traités / mois par outil" (None = unlimited); rate limits are its
+# "limites de débit" column. This quota is separate from MAX_FILES_PER_FEATURE
+# above, which still governs the free website/Firebase-session usage
+# (a flat lifetime cap, not plan- or calendar-month-based).
+API_KEY_PLANS = {
+    "starter": {
+        "files_per_feature_per_month": 50,
+        "rate_limit_max_requests": 5,
+        "rate_limit_window_seconds": 60,
+    },
+    "pro": {
+        "files_per_feature_per_month": 500,
+        "rate_limit_max_requests": 20,
+        "rate_limit_window_seconds": 60,
+    },
+    "enterprise": {
+        # "Sur mesure" on the pricing page — no fixed cap here yet (no
+        # per-key custom-limit storage exists), just a generous default.
+        # A real "custom" plan would need a per-key override, not a
+        # shared tier value; TODO if/when that's needed.
+        "files_per_feature_per_month": None,
+        "rate_limit_max_requests": 100,
+        "rate_limit_window_seconds": 60,
+    },
+}
+DEFAULT_API_KEY_PLAN = "starter"
+
 # --- Admin reports --------------------------------------------------------
 # Emails allowed to call /api/admin/send-report. Client-side (admin-reports.js)
 # also checks against this same list for UX gating only — this server-side

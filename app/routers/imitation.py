@@ -41,7 +41,7 @@ async def imitation(
 
     payload = await asyncio.to_thread(
         run_feature_processing,
-        uid=auth.uid,
+        auth=auth,
         raw_body=raw_body,
         file_name=file_name,
         output_name=output_name,
@@ -51,6 +51,5 @@ async def imitation(
         build_command=build_command,
         extra_response_fields={"voice_model": voice_model},
         error_label="voice imitation",
-        bypass_quota_and_storage=(auth.auth_method == "api_key"),
     )
     return payload

@@ -8,21 +8,27 @@ import wave
 from fastapi import HTTPException
 
 from app import config
-from app.services import audio
+from app.deps import AuthContext
+from app.services import audio, api_key_quota
 from app.services.detector import build_deepfake_command
 from app.services.firebase import FirestoreUnavailableError, get_firestore_client
 from app.services.quota import QuotaExceededError, reserve_usage_file
 
 
-def prepare_deepfake_job(uid: str, raw_body: bytes, file_name: str, bypass_quota: bool = False) -> dict:
+def prepare_deepfake_job(auth: AuthContext, raw_body: bytes, file_name: str) -> dict:
     """Returns {"command", "firestore_client", "usage_ref", "minutes_needed",
     "input_path"} on success, or raises HTTPException/ValueError on failure
     (the input file has already been cleaned up in that case).
 
-    `bypass_quota` is set for API-key callers: no quota is reserved and, on
-    any failure below, the uploaded input is deleted immediately rather
+    For an API-key caller (`auth.auth_method == "api_key"`), quota is
+    checked against that key's plan allowance for the current calendar
+    month instead of the website's flat lifetime usage/{uid} cap, and on
+    any failure below the uploaded input is deleted immediately rather
     than left for the TTL sweep — see process_flow.run_feature_processing's
     docstring for the fuller rationale (shared by both processing paths)."""
+    uid = auth.uid
+    is_api_key = auth.auth_method == "api_key"
+
     try:
         input_path = audio.save_upload(uid, raw_body, file_name)
     except ValueError as exc:
@@ -45,30 +51,32 @@ def prepare_deepfake_job(uid: str, raw_body: bytes, file_name: str, bypass_quota
             ),
         )
 
-    firestore_client = None
-    usage_ref = None
-    if not bypass_quota:
-        try:
-            firestore_client = get_firestore_client()
+    try:
+        firestore_client = get_firestore_client()
+        if is_api_key:
+            usage_ref = api_key_quota.usage_doc_ref(firestore_client, auth.key_id)
+            max_files = api_key_quota.plan_file_limit(auth.plan)
+        else:
             usage_ref = firestore_client.collection("usage").document(uid)
-            reserve_usage_file(firestore_client.transaction(), usage_ref, config.FEATURE_KEY_DEEPFAKE)
-        except FirestoreUnavailableError as exc:
-            audio.cleanup_file(input_path)
-            raise HTTPException(status_code=503, detail=str(exc))
-        except QuotaExceededError as exc:
-            audio.cleanup_file(input_path)
-            raise HTTPException(status_code=429, detail=str(exc))
-        except Exception as exc:  # noqa: BLE001
-            print(f"Quota reservation failed for {uid}/deepfake: {exc}")
-            audio.cleanup_file(input_path)
-            raise HTTPException(status_code=503, detail=f"Could not verify quota: {exc}")
+            max_files = config.MAX_FILES_PER_FEATURE
+        reserve_usage_file(firestore_client.transaction(), usage_ref, config.FEATURE_KEY_DEEPFAKE, max_files)
+    except FirestoreUnavailableError as exc:
+        audio.cleanup_file(input_path)
+        raise HTTPException(status_code=503, detail=str(exc))
+    except QuotaExceededError as exc:
+        audio.cleanup_file(input_path)
+        raise HTTPException(status_code=429, detail=str(exc))
+    except Exception as exc:  # noqa: BLE001
+        print(f"Quota reservation failed for {uid}/deepfake: {exc}")
+        audio.cleanup_file(input_path)
+        raise HTTPException(status_code=503, detail=f"Could not verify quota: {exc}")
 
     try:
         command = build_deepfake_command(input_path)
     except FileNotFoundError as exc:
         from app.services.quota import release_quota_safely
         release_quota_safely(firestore_client, usage_ref, config.FEATURE_KEY_DEEPFAKE, "missing executable")
-        if bypass_quota:
+        if is_api_key:
             audio.cleanup_file(input_path)
         raise HTTPException(status_code=500, detail=str(exc))
 
@@ -79,7 +87,9 @@ def prepare_deepfake_job(uid: str, raw_body: bytes, file_name: str, bypass_quota
         "minutes_needed": minutes_needed,
         "input_path": input_path,
         "original_file_name": file_name,
-        "bypass_quota": bypass_quota,
+        "max_files": max_files,
+        "is_api_key": is_api_key,
+        "plan": auth.plan,
     }
 
 
@@ -93,18 +103,18 @@ def finalize_deepfake_result(done_event: dict, job: dict, uid: str) -> dict:
     firestore_client = job["firestore_client"]
     usage_ref = job["usage_ref"]
     feature_key = config.FEATURE_KEY_DEEPFAKE
-    bypass_quota = job.get("bypass_quota", False)
+    is_api_key = job.get("is_api_key", False)
     input_path = job["input_path"]
 
     if done_event.get("cancelled"):
         release_quota_safely(firestore_client, usage_ref, feature_key, "client disconnected")
-        if bypass_quota:
+        if is_api_key:
             audio.cleanup_file(input_path)
         return {"type": "error", "error": "Connection closed before detection finished"}
 
     if done_event.get("timed_out"):
         release_quota_safely(firestore_client, usage_ref, feature_key, "timeout")
-        if bypass_quota:
+        if is_api_key:
             audio.cleanup_file(input_path)
         return {
             "type": "error",
@@ -115,7 +125,7 @@ def finalize_deepfake_result(done_event: dict, job: dict, uid: str) -> dict:
     returncode = done_event.get("returncode")
     if returncode != 0:
         release_quota_safely(firestore_client, usage_ref, feature_key, "processing error")
-        if bypass_quota:
+        if is_api_key:
             audio.cleanup_file(input_path)
         return {
             "type": "error",
@@ -127,7 +137,7 @@ def finalize_deepfake_result(done_event: dict, job: dict, uid: str) -> dict:
     deepfake_percent = parse_deepfake_percent(done_event.get("full_stdout", ""))
     if deepfake_percent is None:
         release_quota_safely(firestore_client, usage_ref, feature_key, "unparseable result")
-        if bypass_quota:
+        if is_api_key:
             audio.cleanup_file(input_path)
         return {
             "type": "error",
@@ -139,19 +149,20 @@ def finalize_deepfake_result(done_event: dict, job: dict, uid: str) -> dict:
     verdict = "synthetic" if deepfake_percent >= config.DEEPFAKE_THRESHOLD_PERCENT else "genuine"
     duration_seconds = job["minutes_needed"] * 60
 
-    files_used = None
-    if not bypass_quota:
-        try:
-            files_used = commit_reserved_file(firestore_client.transaction(), usage_ref, feature_key)
-        except Exception as exc:  # noqa: BLE001
-            print(f"Quota commit failed for {uid}/{feature_key}: {exc}")
-            release_quota_safely(firestore_client, usage_ref, feature_key, "commit failure")
-            files_used = None
+    try:
+        files_used = commit_reserved_file(firestore_client.transaction(), usage_ref, feature_key)
+    except Exception as exc:  # noqa: BLE001
+        print(f"Quota commit failed for {uid}/{feature_key}: {exc}")
+        release_quota_safely(firestore_client, usage_ref, feature_key, "commit failure")
+        files_used = None
 
-        if files_used is not None:
-            from app.services.zoho import log_usage_event
-            log_usage_event(uid, feature_key)
+    if files_used is not None and not is_api_key:
+        from app.services.zoho import log_usage_event
+        log_usage_event(uid, feature_key)
 
+    if is_api_key:
+        audio.cleanup_file(input_path)
+    else:
         # Deepfake detection has no processed audio output of its own —
         # record just the input so the unsatisfied-survey Zoho flow
         # (webhooks.py) can attach it to the user's Contact.
@@ -170,8 +181,6 @@ def finalize_deepfake_result(done_event: dict, job: dict, uid: str) -> dict:
         # fires for this submission (see process_flow.py's identical
         # comment).
         schedule_file_cleanup(input_path)
-    else:
-        audio.cleanup_file(input_path)
 
     result_event = {
         "type": "result",
@@ -183,10 +192,10 @@ def finalize_deepfake_result(done_event: dict, job: dict, uid: str) -> dict:
         "uid": uid,
         "duration_seconds": duration_seconds,
         "files_used": files_used,
-        "max_files": config.MAX_FILES_PER_FEATURE,
+        "max_files": job.get("max_files", config.MAX_FILES_PER_FEATURE),
     }
-    if bypass_quota:
-        result_event["quota_bypassed"] = True
+    if is_api_key:
+        result_event["plan"] = job.get("plan")
     elif files_used is None:
         result_event["usage_warning"] = (
             "Detection succeeded, but quota could not be recorded. Please contact support if this persists."

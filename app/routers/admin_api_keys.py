@@ -1,8 +1,9 @@
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
+from app import config
 from app.routers.admin_reports import require_admin
-from app.services.api_keys import create_api_key, list_api_keys_for_uid, revoke_api_key
+from app.services.api_keys import create_api_key, list_api_keys_for_uid, revoke_api_key, set_api_key_plan
 
 router = APIRouter()
 
@@ -10,6 +11,11 @@ router = APIRouter()
 class CreateApiKeyRequest(BaseModel):
     uid: str
     label: str | None = None
+    plan: str = config.DEFAULT_API_KEY_PLAN
+
+
+class SetPlanRequest(BaseModel):
+    plan: str
 
 
 @router.post("/api/admin/api-keys")
@@ -21,8 +27,12 @@ async def create_key(body: CreateApiKeyRequest, _admin: dict = Depends(require_a
     if not body.uid.strip():
         raise HTTPException(status_code=400, detail="uid is required")
 
-    raw_key, key_id = create_api_key(body.uid.strip(), body.label)
-    return {"ok": True, "key_id": key_id, "api_key": raw_key, "uid": body.uid, "label": body.label}
+    try:
+        raw_key, key_id = create_api_key(body.uid.strip(), body.label, body.plan)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    return {"ok": True, "key_id": key_id, "api_key": raw_key, "uid": body.uid, "label": body.label, "plan": body.plan}
 
 
 @router.get("/api/admin/api-keys")
@@ -39,3 +49,17 @@ async def revoke_key(key_id: str, _admin: dict = Depends(require_admin)):
     if not revoke_api_key(key_id):
         raise HTTPException(status_code=404, detail="API key not found")
     return {"ok": True, "key_id": key_id, "revoked": True}
+
+
+@router.post("/api/admin/api-keys/{key_id}/plan")
+async def change_key_plan(key_id: str, body: SetPlanRequest, _admin: dict = Depends(require_admin)):
+    """Staff-only plan change — for a manual Enterprise ("sur mesure")
+    negotiation, or a support-handled upgrade/downgrade outside the
+    self-service flow."""
+    try:
+        changed = set_api_key_plan(key_id, body.plan)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    if not changed:
+        raise HTTPException(status_code=404, detail="API key not found")
+    return {"ok": True, "key_id": key_id, "plan": body.plan}

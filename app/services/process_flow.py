@@ -18,7 +18,8 @@ import wave
 from fastapi import HTTPException
 
 from app import config
-from app.services import audio
+from app.deps import AuthContext
+from app.services import audio, api_key_quota
 from app.services.downloads import generate_download_token, schedule_file_cleanup
 from app.services.firebase import FirestoreUnavailableError, get_firestore_client
 from app.services.zoho import save_processed_output_record, sync_confidential_flag_to_zoho, log_usage_event
@@ -27,7 +28,7 @@ from app.services.quota import QuotaExceededError, commit_reserved_file, release
 
 def run_feature_processing(
     *,
-    uid: str,
+    auth: AuthContext,
     raw_body: bytes,
     file_name: str,
     output_name: str | None,
@@ -37,18 +38,22 @@ def run_feature_processing(
     build_command,  # callable(input_path, output_path) -> list[str]
     extra_response_fields: dict | None = None,
     error_label: str,
-    bypass_quota_and_storage: bool = False,
 ) -> dict:
-    """`bypass_quota_and_storage` is set for API-key callers: their files
-    are their own application's data, not ours, so no quota is
-    reserved/counted, nothing is persisted to Firestore or synced to Zoho,
-    and both the uploaded input and the processed output are deleted from
-    local disk immediately after the response is built (rather than kept
-    around on a TTL) — the output is returned inline as base64 instead of
-    via a downloadable /outputs/ URL, since there's no file left to serve
-    by the time the response is sent."""
+    """For an API-key caller (`auth.auth_method == "api_key"`), quota is
+    checked against that key's plan allowance for the current calendar
+    month (api_key_quota.py) rather than the website's flat lifetime
+    usage/{uid} cap — and, since their files are their own application's
+    data rather than ours, nothing is persisted to Firestore or synced to
+    Zoho, and both the uploaded input and the processed output are deleted
+    from local disk immediately after the response is built (rather than
+    kept around on a TTL) — the output is returned inline as base64
+    instead of via a downloadable /outputs/ URL, since there's no file
+    left to serve by the time the response is sent.
+    """
+    uid = auth.uid
+    is_api_key = auth.auth_method == "api_key"
     extra_response_fields = extra_response_fields or {}
-    if not bypass_quota_and_storage:
+    if not is_api_key:
         sync_confidential_flag_to_zoho(uid, confidential)
 
     # --- upload -----------------------------------------------------
@@ -78,23 +83,27 @@ def run_feature_processing(
         )
 
     # --- quota reservation --------------------------------------------
-    firestore_client = None
-    usage_ref = None
-    if not bypass_quota_and_storage:
-        try:
-            firestore_client = get_firestore_client()
+    # API-key calls reserve against that key's plan/monthly allowance;
+    # Firebase-session calls reserve against the website's flat lifetime cap.
+    try:
+        firestore_client = get_firestore_client()
+        if is_api_key:
+            usage_ref = api_key_quota.usage_doc_ref(firestore_client, auth.key_id)
+            max_files = api_key_quota.plan_file_limit(auth.plan)
+        else:
             usage_ref = firestore_client.collection("usage").document(uid)
-            reserve_usage_file(firestore_client.transaction(), usage_ref, feature_key)
-        except FirestoreUnavailableError as exc:
-            audio.cleanup_file(input_path)
-            raise HTTPException(status_code=503, detail=str(exc))
-        except QuotaExceededError as exc:
-            audio.cleanup_file(input_path)
-            raise HTTPException(status_code=429, detail=str(exc))
-        except Exception as exc:  # noqa: BLE001
-            print(f"Quota reservation failed for {uid}/{feature_key}: {exc}")
-            audio.cleanup_file(input_path)
-            raise HTTPException(status_code=503, detail=f"Could not verify quota: {exc}")
+            max_files = config.MAX_FILES_PER_FEATURE
+        reserve_usage_file(firestore_client.transaction(), usage_ref, feature_key, max_files)
+    except FirestoreUnavailableError as exc:
+        audio.cleanup_file(input_path)
+        raise HTTPException(status_code=503, detail=str(exc))
+    except QuotaExceededError as exc:
+        audio.cleanup_file(input_path)
+        raise HTTPException(status_code=429, detail=str(exc))
+    except Exception as exc:  # noqa: BLE001
+        print(f"Quota reservation failed for {uid}/{feature_key}: {exc}")
+        audio.cleanup_file(input_path)
+        raise HTTPException(status_code=503, detail=f"Could not verify quota: {exc}")
 
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
 
@@ -106,12 +115,12 @@ def run_feature_processing(
         )
     except (FileNotFoundError, ValueError) as exc:
         release_quota_safely(firestore_client, usage_ref, feature_key, "missing executable / bad params")
-        if bypass_quota_and_storage:
+        if is_api_key:
             audio.cleanup_file(input_path)
         raise HTTPException(status_code=500, detail=str(exc))
     except subprocess.TimeoutExpired as exc:
         release_quota_safely(firestore_client, usage_ref, feature_key, "timeout")
-        if bypass_quota_and_storage:
+        if is_api_key:
             audio.cleanup_file(input_path)
         raise HTTPException(
             status_code=504,
@@ -120,7 +129,7 @@ def run_feature_processing(
 
     if completed.returncode != 0:
         release_quota_safely(firestore_client, usage_ref, feature_key, "processing error")
-        if bypass_quota_and_storage:
+        if is_api_key:
             audio.cleanup_file(input_path)
         raise HTTPException(
             status_code=500,
@@ -135,23 +144,21 @@ def run_feature_processing(
         )
 
     # --- quota commit ---------------------------------------------------
-    files_used = None
-    if not bypass_quota_and_storage:
-        try:
-            files_used = commit_reserved_file(firestore_client.transaction(), usage_ref, feature_key)
-        except Exception as exc:  # noqa: BLE001
-            print(f"Quota commit failed for {uid}/{feature_key}: {exc}")
-            release_quota_safely(firestore_client, usage_ref, feature_key, "commit failure")
-            files_used = None
+    try:
+        files_used = commit_reserved_file(firestore_client.transaction(), usage_ref, feature_key)
+    except Exception as exc:  # noqa: BLE001
+        print(f"Quota commit failed for {uid}/{feature_key}: {exc}")
+        release_quota_safely(firestore_client, usage_ref, feature_key, "commit failure")
+        files_used = None
 
-        if files_used is not None:
-            log_usage_event(uid, feature_key)
+    if files_used is not None and not is_api_key:
+        log_usage_event(uid, feature_key)
 
     # --- output: URL + TTL cleanup, or inline bytes + immediate cleanup ----
     output_url = None
     output_audio_base64 = None
     if os.path.exists(output_path):
-        if bypass_quota_and_storage:
+        if is_api_key:
             with open(output_path, "rb") as handle:
                 output_audio_base64 = base64.b64encode(handle.read()).decode("ascii")
             audio.cleanup_file(output_path)
@@ -169,7 +176,7 @@ def run_feature_processing(
                 )
             schedule_file_cleanup(output_path)
 
-    if bypass_quota_and_storage:
+    if is_api_key:
         audio.cleanup_file(input_path)
     else:
         # Keep the input file around (rather than deleting it immediately) so
@@ -190,12 +197,12 @@ def run_feature_processing(
         "uid": uid,
         "duration_seconds": duration_seconds,
         "files_used": files_used,
-        "max_files": config.MAX_FILES_PER_FEATURE,
+        "max_files": max_files,
         **extra_response_fields,
     }
-    if bypass_quota_and_storage:
+    if is_api_key:
         payload["output_audio_base64"] = output_audio_base64
-        payload["quota_bypassed"] = True
+        payload["plan"] = auth.plan
     elif files_used is None:
         payload["usage_warning"] = (
             f"{error_label.capitalize()} succeeded, but quota could not be recorded. "
