@@ -118,7 +118,7 @@ ZOHO_ACCOUNTS_URL = os.environ.get("ZOHO_ACCOUNTS_URL")
 ZOHO_API_DOMAIN = os.environ.get("ZOHO_API_DOMAIN")
 # Must match exactly what's registered in the Zoho API console.
 ZOHO_REDIRECT_URI = os.environ.get(
-    "ZOHO_REDIRECT_URI", f"http://localhost:{5500}/api/zoho/oauth/callback"
+    "ZOHO_REDIRECT_URI", f"http://localhost:{8001}/api/zoho/oauth/callback"
 )
 ZOHO_UNSATISFIED_WEBHOOK_SECRET = os.environ.get("ZOHO_UNSATISFIED_WEBHOOK_SECRET")
 ZOHO_UNSATISFIED_WEBHOOK_HEADER = "X-Webhook-Secret"
