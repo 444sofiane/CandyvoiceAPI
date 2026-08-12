@@ -3,7 +3,13 @@ from pydantic import BaseModel
 
 from app import config
 from app.routers.admin_reports import require_admin
-from app.services.api_keys import create_api_key, list_api_keys_for_uid, revoke_api_key, set_api_key_plan
+from app.services.api_keys import (
+    create_api_key,
+    list_all_api_keys,
+    list_api_keys_for_uid,
+    revoke_api_key,
+    set_api_key_plan,
+)
 
 router = APIRouter()
 
@@ -38,6 +44,20 @@ async def create_key(body: CreateApiKeyRequest, _admin: dict = Depends(require_a
 @router.get("/api/admin/api-keys")
 async def list_keys(uid: str, _admin: dict = Depends(require_admin)):
     return {"ok": True, "uid": uid, "keys": list_api_keys_for_uid(uid)}
+
+
+@router.get("/api/admin/api-keys/all")
+async def list_every_key(limit: int = 50, cursor: str | None = None, _admin: dict = Depends(require_admin)):
+    """Every API key across every user, newest first — for an admin
+    dashboard listing keys + plans + owning uid. Each row has a bare
+    `uid`, not an email; resolve that separately (e.g. Firebase Auth
+    lookup, only for rows currently on screen) rather than expect it here.
+
+    Paginated: pass the response's `next_cursor` back as `?cursor=` to
+    fetch the next page. `next_cursor: null` means there are no more."""
+    limit = max(1, min(limit, 200))
+    keys, next_cursor = list_all_api_keys(limit=limit, cursor=cursor)
+    return {"ok": True, "keys": keys, "next_cursor": next_cursor}
 
 
 @router.post("/api/admin/api-keys/{key_id}/revoke")

@@ -102,6 +102,46 @@ def list_api_keys_for_uid(uid: str) -> list[dict]:
     ]
 
 
+def list_all_api_keys(limit: int = 50, cursor: str | None = None) -> tuple[list[dict], str | None]:
+    """Returns (keys, next_cursor): up to `limit` keys across *all* users,
+    newest first — for an admin "every key" dashboard, as opposed to
+    list_api_keys_for_uid's self-service, single-user view. Each row is
+    the bare `uid`, not an email — resolving that to something
+    human-readable is left to the caller (e.g. only for the rows
+    currently visible), since doing it here would mean one Firebase Auth
+    lookup per key and get slow as the list grows.
+
+    Pass the returned `next_cursor` back as `cursor` to fetch the next
+    page; `next_cursor` is None once there are no more pages."""
+    client = get_firestore_client()
+    query = (
+        client.collection(_COLLECTION)
+        .order_by("createdAt", direction=admin_firestore.Query.DESCENDING)
+        .limit(limit)
+    )
+
+    if cursor:
+        cursor_doc = client.collection(_COLLECTION).document(cursor).get()
+        if cursor_doc.exists:
+            query = query.start_after(cursor_doc)
+
+    docs = list(query.stream())
+    keys = [
+        {
+            "key_id": doc.id,
+            "uid": doc.to_dict().get("uid"),
+            "label": doc.to_dict().get("label"),
+            "plan": doc.to_dict().get("plan") or config.DEFAULT_API_KEY_PLAN,
+            "createdAt": doc.to_dict().get("createdAt"),
+            "lastUsedAt": doc.to_dict().get("lastUsedAt"),
+            "revoked": bool(doc.to_dict().get("revoked")),
+        }
+        for doc in docs
+    ]
+    next_cursor = docs[-1].id if len(docs) == limit else None
+    return keys, next_cursor
+
+
 def get_api_key_for_owner(key_id: str, owner_uid: str) -> dict | None:
     """Fetches one key's metadata, scoped to its owner — returns None if
     the key doesn't exist or belongs to someone else (never distinguishes

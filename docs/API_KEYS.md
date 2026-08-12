@@ -1,9 +1,10 @@
 # CandyVoice API — API Keys
 
 How a signed-in user gets a long-lived API key for their own application,
-and how that key behaves differently from a normal Firebase-session call.
-Companion to [`API.md`](API.md) — start there for the processing endpoints
-themselves; this doc only covers what's specific to keys.
+how that key behaves differently from a normal Firebase-session call, and
+the staff-only endpoints for managing keys across all users. Companion to
+[`API.md`](API.md) — start there for the processing endpoints themselves;
+this doc only covers what's specific to keys.
 
 ## Why a key, and how it differs from your Firebase session
 
@@ -186,6 +187,108 @@ curl -X POST https://api.candyvoice.com/api/keys/3f9c2a...e01b/revoke \
 A `key_id` that doesn't exist, is already revoked, or belongs to a
 different user all return the same `404 API key not found` — a user can't
 use this to probe whether some other account's key exists.
+
+## Admin (staff-only)
+
+For internal tooling — a support/ops dashboard, not the customer-facing
+frontend. Gated by the same `ADMIN_EMAILS` allow-list as
+`/api/admin/send-report`: send a Firebase ID token belonging to an admin
+account as `Authorization: Bearer ...`, same as any other admin route.
+Unlike everything above, these act on *any* user's keys, not just the
+caller's own.
+
+### `POST /api/admin/api-keys`
+
+Issues a key for an arbitrary `uid` — e.g. provisioning one on a
+customer's behalf, or backfilling a key for support to hand over
+manually.
+
+```bash
+curl -X POST https://api.candyvoice.com/api/admin/api-keys \
+  -H "Authorization: Bearer $ADMIN_FIREBASE_ID_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"uid": "uid456", "label": "support-issued", "plan": "pro"}'
+```
+
+```json
+{ "ok": true, "key_id": "8b1e0f...4a2c", "api_key": "cvk_...", "uid": "uid456", "label": "support-issued", "plan": "pro" }
+```
+
+### `GET /api/admin/api-keys?uid=`
+
+Lists one user's keys — same shape as the self-service `GET /api/keys`,
+for any `uid` you supply.
+
+```bash
+curl "https://api.candyvoice.com/api/admin/api-keys?uid=uid456" \
+  -H "Authorization: Bearer $ADMIN_FIREBASE_ID_TOKEN"
+```
+
+```json
+{ "ok": true, "uid": "uid456", "keys": [ { "key_id": "8b1e0f...4a2c", "label": "support-issued", "plan": "pro", "createdAt": "2026-08-10T09:15:00Z", "lastUsedAt": null, "revoked": false } ] }
+```
+
+### `GET /api/admin/api-keys/all`
+
+Every key across every user, newest first — this is the one for a "list
+all API keys, their plans, and who they belong to" admin table.
+Paginated: pass `?limit=` (default 50, capped at 200) and, for the next
+page, the previous response's `next_cursor` back as `?cursor=`;
+`next_cursor: null` means there's no more.
+
+```bash
+curl "https://api.candyvoice.com/api/admin/api-keys/all?limit=50" \
+  -H "Authorization: Bearer $ADMIN_FIREBASE_ID_TOKEN"
+```
+
+```json
+{
+  "ok": true,
+  "keys": [
+    { "key_id": "3f9c2a...e01b", "uid": "uid123", "label": "my mobile app", "plan": "pro", "createdAt": "2026-08-12T10:03:00Z", "lastUsedAt": "2026-08-12T14:22:11Z", "revoked": false },
+    { "key_id": "8b1e0f...4a2c", "uid": "uid456", "label": "support-issued", "plan": "pro", "createdAt": "2026-08-10T09:15:00Z", "lastUsedAt": null, "revoked": false }
+  ],
+  "next_cursor": "8b1e0f...4a2c"
+}
+```
+
+Each row is the bare `uid`, not an email — resolving that to something
+human-readable (e.g. `firebase_admin.auth.get_user(uid)`) is left to your
+admin frontend, and worth doing only for the rows currently on screen
+rather than all 50 up front, since it's one Firebase Auth lookup per uid.
+
+### `POST /api/admin/api-keys/{key_id}/revoke`
+
+Revokes any key, regardless of owner — for a lost/compromised-key support
+request. Same response shape and `404` behavior as the self-service
+version above, just without the ownership check.
+
+```bash
+curl -X POST https://api.candyvoice.com/api/admin/api-keys/8b1e0f...4a2c/revoke \
+  -H "Authorization: Bearer $ADMIN_FIREBASE_ID_TOKEN"
+```
+
+```json
+{ "ok": true, "key_id": "8b1e0f...4a2c", "revoked": true }
+```
+
+### `POST /api/admin/api-keys/{key_id}/plan`
+
+Changes a key's plan directly — a manual Enterprise ("sur mesure")
+sign-up, or a support-handled upgrade/downgrade outside the self-service
+flow. `plan` must be one of `starter` / `pro` / `enterprise` (`400` if
+not); unknown `key_id` is a `404`.
+
+```bash
+curl -X POST https://api.candyvoice.com/api/admin/api-keys/8b1e0f...4a2c/plan \
+  -H "Authorization: Bearer $ADMIN_FIREBASE_ID_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"plan": "enterprise"}'
+```
+
+```json
+{ "ok": true, "key_id": "8b1e0f...4a2c", "plan": "enterprise" }
+```
 
 ## Using a key against the processing endpoints
 

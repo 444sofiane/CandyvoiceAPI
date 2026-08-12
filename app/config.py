@@ -164,7 +164,7 @@ DEFAULT_API_KEY_PLAN = "starter"
 ADMIN_EMAILS = {
     email.strip().lower()
     for email in os.environ.get(
-        "ADMIN_EMAILS", "jl.crebouw@candyvoice.com"
+        "ADMIN_EMAILS", "jl.crebouw@candyvoice.com,s.saou@candyvoice.com,m.iwanow@candyvoice.com"
     ).split(",")
     if email.strip()
 }
