@@ -84,13 +84,22 @@ def list_api_keys_for_uid(uid: str) -> list[dict]:
     ]
 
 
-def revoke_api_key(key_id: str) -> bool:
+def revoke_api_key(key_id: str, owner_uid: str | None = None) -> bool:
     """Marks a key revoked by its key_id (the hash returned from
     create_api_key/list_api_keys_for_uid). Returns False if no such key
-    exists."""
+    exists.
+
+    `owner_uid`, when given, scopes this to self-service revocation: the
+    key must belong to that uid or this returns False (not found) rather
+    than revoking it — deliberately indistinguishable from "no such key" so
+    a user can't use this to probe which key_ids exist for other
+    accounts. Admin callers pass owner_uid=None to revoke any key."""
     client = get_firestore_client()
     ref = client.collection(_COLLECTION).document(key_id)
-    if not ref.get().exists:
+    snapshot = ref.get()
+    if not snapshot.exists:
+        return False
+    if owner_uid is not None and snapshot.to_dict().get("uid") != owner_uid:
         return False
     ref.update({"revoked": True, "revokedAt": admin_firestore.SERVER_TIMESTAMP})
     return True

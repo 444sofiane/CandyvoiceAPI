@@ -32,6 +32,10 @@ async def list_keys(uid: str, _admin: dict = Depends(require_admin)):
 
 @router.post("/api/admin/api-keys/{key_id}/revoke")
 async def revoke_key(key_id: str, _admin: dict = Depends(require_admin)):
+    """Unscoped revoke — an admin can revoke any user's key (e.g. a support
+    request for a lost/compromised key). Compare to the self-service
+    /api/keys/{key_id}/revoke in api_keys.py, which only lets a user revoke
+    their own."""
     if not revoke_api_key(key_id):
         raise HTTPException(status_code=404, detail="API key not found")
     return {"ok": True, "key_id": key_id, "revoked": True}

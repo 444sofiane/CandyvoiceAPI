@@ -9,7 +9,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from app import config
 from app.services.downloads import periodic_cleanup_sweep
 from app.services.firebase import init_firebase_admin
-from app.routers import admin_api_keys, admin_reports, deepfake, frame_recovery, health, imitation, noise_filter, outputs, webhooks, zoho_auth
+from app.routers import admin_api_keys, admin_reports, api_keys, deepfake, frame_recovery, health, imitation, noise_filter, outputs, webhooks, zoho_auth
 
 app = FastAPI(
     title="CandyVoice API",
@@ -62,6 +62,7 @@ app.include_router(webhooks.router)
 app.include_router(zoho_auth.router)
 app.include_router(admin_reports.router)
 app.include_router(admin_api_keys.router)
+app.include_router(api_keys.router)
 
 
 @app.get("/")
