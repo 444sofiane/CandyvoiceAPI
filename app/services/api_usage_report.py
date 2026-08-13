@@ -97,16 +97,16 @@ def build_api_usage_report_workbook(report: dict) -> bytes:
     plan(s), key count, a column per feature, and a total."""
     wb = Workbook()
     ws = wb.active
-    ws.title = "API usage by user"
+    ws.title = "Utilisation par utilisateur"
 
-    ws["A1"] = "CandyVoice API usage report"
+    ws["A1"] = "Rapport d'utilisation de l'API CandyVoice"
     ws["A1"].font = Font(bold=True, size=14)
     ws["A2"] = report["period"]
     ws["A2"].font = Font(color="666666")
 
     header_row = 4
     headers = (
-        ["Email", "Uid", "Plan(s)", "Keys"]
+        ["E-mail", "Uid", "Offre(s)", "Clés"]
         + [FEATURE_DISPLAY_NAMES.get(fk, fk) for fk in ALL_FEATURE_KEYS]
         + ["Total"]
     )
@@ -116,7 +116,7 @@ def build_api_usage_report_workbook(report: dict) -> bytes:
 
     for offset, row in enumerate(report["rows"], start=1):
         r = header_row + offset
-        ws.cell(row=r, column=1, value=row["email"] or "(no email on file)")
+        ws.cell(row=r, column=1, value=row["email"] or "(aucun e-mail enregistré)")
         ws.cell(row=r, column=2, value=row["uid"])
         ws.cell(row=r, column=3, value=", ".join(row["plans"]))
         ws.cell(row=r, column=4, value=row["key_count"])
@@ -125,7 +125,7 @@ def build_api_usage_report_workbook(report: dict) -> bytes:
         ws.cell(row=r, column=4 + len(ALL_FEATURE_KEYS) + 1, value=row["total"])
 
     if not report["rows"]:
-        ws.cell(row=header_row + 1, column=1, value="No API-key usage this period.")
+        ws.cell(row=header_row + 1, column=1, value="Aucune utilisation de clé API sur cette période.")
 
     _autofit = [28, 24, 16, 8] + [16] * len(ALL_FEATURE_KEYS) + [10]
     for col_idx, width in enumerate(_autofit, start=1):
@@ -149,17 +149,17 @@ def send_api_usage_report_email(report: dict) -> None:
     filename = f"candyvoice-api-usage-{report['period']}.xlsx"
 
     message = MIMEMultipart("mixed")
-    message["Subject"] = f"CandyVoice API usage report — {report['period']}"
+    message["Subject"] = f"Rapport d'utilisation de l'API CandyVoice — {report['period']}"
     message["From"] = f"{config.SMTP2GO_FROM_NAME} <{config.SMTP2GO_FROM_EMAIL}>"
     message["To"] = ", ".join(config.ADMIN_REPORT_RECIPIENTS)
 
     total_users = len(report["rows"])
     total_files = sum(row["total"] for row in report["rows"])
     body_text = (
-        f"CandyVoice API-key usage report — {report['period']}.\n\n"
-        f"{total_users} user(s) with API-key activity this period, "
-        f"{total_files} file(s) processed in total across all keys and features.\n\n"
-        f"See the attached workbook ({filename}) for the per-user, per-feature breakdown."
+        f"Rapport d'utilisation des clés API CandyVoice — {report['period']}.\n\n"
+        f"{total_users} utilisateur(s) avec une activité de clé API sur cette période, "
+        f"{total_files} fichier(s) traité(s) au total, toutes clés et fonctionnalités confondues.\n\n"
+        f"Consultez le classeur joint ({filename}) pour le détail par utilisateur et par fonctionnalité."
     )
     message.attach(MIMEText(body_text, "plain"))
 

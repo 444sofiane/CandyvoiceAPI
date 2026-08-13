@@ -26,10 +26,10 @@ from app.services.firebase import get_firestore_client
 # rows don't silently get counted alongside new ones under one name.
 FEATURE_DISPLAY_NAMES = {
     "noiseFilter": "NoizOff",
-    "imitation": "Voice Imitation",
-    "deepfake": "Deepfake Detection",
-    "frameRecovery": "Frame Recovery",
-    "unknown": "Unspecified",
+    "imitation": "Imitation vocale",
+    "deepfake": "Détection de deepfake",
+    "frameRecovery": "Récupération de trames",
+    "unknown": "Non spécifié",
 }
 
 # Old/alternate spellings that should be counted as the same feature during
@@ -52,10 +52,10 @@ _HEADER_FILL = PatternFill(start_color="5A4BFF", end_color="5A4BFF", fill_type="
 _HEADER_FONT = Font(color="FFFFFF", bold=True)
 
 RANGE_LABELS = {
-    "day": "Last day",
-    "week": "Last 7 days",
-    "3months": "Last 3 months",
-    "6months": "Last 6 months",
+    "day": "Dernier jour",
+    "week": "7 derniers jours",
+    "3months": "3 derniers mois",
+    "6months": "6 derniers mois",
 }
 
 # Longer ranges are bucketed by month instead of by day, so a 6-month email
@@ -197,14 +197,14 @@ def _autofit_columns(ws, widths):
 def _write_summary_sheet(ws, report):
     features = sorted(set(report["usage_totals"]) | set(report["satisfaction_totals"]))
 
-    ws["A1"] = "CandyVoice usage & satisfaction report"
+    ws["A1"] = "Rapport d'utilisation et de satisfaction CandyVoice"
     ws["A1"].font = Font(bold=True, size=14)
     ws["A2"] = report["range_label"]
     ws["A3"] = f"{report['start'].date()} — {report['end'].date()}"
     ws["A2"].font = ws["A3"].font = Font(color="666666")
 
     header_row = 5
-    headers = ["Feature", "Unique users", "Avg. satisfaction", "Ratings"]
+    headers = ["Fonctionnalité", "Utilisateurs uniques", "Satisfaction moyenne", "Évaluations"]
     for col_idx, header in enumerate(headers, start=1):
         ws.cell(row=header_row, column=col_idx, value=header)
     _style_header_row(ws, header_row, len(headers))
@@ -221,13 +221,13 @@ def _write_summary_sheet(ws, report):
     _autofit_columns(ws, [26, 14, 16, 10])
 
     if not features:
-        ws.cell(row=header_row + 1, column=1, value="No activity in this period.")
+        ws.cell(row=header_row + 1, column=1, value="Aucune activité sur cette période.")
         return
 
     # Unique users by feature
     users_chart = BarChart()
-    users_chart.title = "Unique users by feature"
-    users_chart.y_axis.title = "Unique users"
+    users_chart.title = "Utilisateurs uniques par fonctionnalité"
+    users_chart.y_axis.title = "Utilisateurs uniques"
     users_data = Reference(ws, min_col=2, min_row=header_row, max_row=last_row)
     categories = Reference(ws, min_col=1, min_row=header_row + 1, max_row=last_row)
     users_chart.add_data(users_data, titles_from_data=True)
@@ -237,8 +237,8 @@ def _write_summary_sheet(ws, report):
 
     # Average satisfaction by feature
     satisfaction_chart = BarChart()
-    satisfaction_chart.title = "Average satisfaction by feature (0-10)"
-    satisfaction_chart.y_axis.title = "Avg. score"
+    satisfaction_chart.title = "Satisfaction moyenne par fonctionnalité (0-10)"
+    satisfaction_chart.y_axis.title = "Score moyen"
     satisfaction_chart.y_axis.scaling.min = 0
     satisfaction_chart.y_axis.scaling.max = 10
     satisfaction_data = Reference(ws, min_col=3, min_row=header_row, max_row=last_row)
@@ -272,7 +272,7 @@ def _pivot_satisfaction_by_period(report):
 
 
 def _write_pivot_sheet(ws, periods, features, rows, value_label, chart_cls, bucket_word):
-    ws["A1"] = f"{value_label} by {bucket_word} and feature"
+    ws["A1"] = f"{value_label} par {bucket_word} et fonctionnalité"
     ws["A1"].font = Font(bold=True, size=12)
 
     header_row = 3
@@ -290,12 +290,12 @@ def _write_pivot_sheet(ws, periods, features, rows, value_label, chart_cls, buck
     _autofit_columns(ws, [14] + [22] * len(features))
 
     if not periods or not features:
-        ws.cell(row=header_row + 1, column=1, value="No activity in this period.")
+        ws.cell(row=header_row + 1, column=1, value="Aucune activité sur cette période.")
         return
 
     last_row = header_row + len(periods)
     chart = chart_cls()
-    chart.title = f"{value_label} over time"
+    chart.title = f"{value_label} dans le temps"
     data = Reference(ws, min_col=2, max_col=1 + len(features), min_row=header_row, max_row=last_row)
     categories = Reference(ws, min_col=1, min_row=header_row + 1, max_row=last_row)
     chart.add_data(data, titles_from_data=True)
@@ -316,21 +316,21 @@ def build_report_workbook(report):
     wb = Workbook()
 
     summary_ws = wb.active
-    summary_ws.title = "Summary"
+    summary_ws.title = "Résumé"
     _write_summary_sheet(summary_ws, report)
 
-    bucket_word = "month" if report["range_key"] in _MONTH_BUCKETED_RANGES else "day"
+    bucket_word = "mois" if report["range_key"] in _MONTH_BUCKETED_RANGES else "jour"
 
-    usage_ws = wb.create_sheet("Usage detail")
+    usage_ws = wb.create_sheet("Détail utilisation")
     _write_pivot_sheet(
         usage_ws, *_pivot_usage_by_period(report),
-        value_label="Unique users", chart_cls=BarChart, bucket_word=bucket_word,
+        value_label="Utilisateurs uniques", chart_cls=BarChart, bucket_word=bucket_word,
     )
 
-    satisfaction_ws = wb.create_sheet("Satisfaction detail")
+    satisfaction_ws = wb.create_sheet("Détail satisfaction")
     _write_pivot_sheet(
         satisfaction_ws, *_pivot_satisfaction_by_period(report),
-        value_label="Avg. satisfaction", chart_cls=LineChart, bucket_word=bucket_word,
+        value_label="Satisfaction moyenne", chart_cls=LineChart, bucket_word=bucket_word,
     )
 
     buffer = io.BytesIO()
@@ -354,7 +354,7 @@ def render_report_html(report):
         f"{report['satisfaction_totals'][feature]['count'] if feature in report['satisfaction_totals'] else 0}</td>"
         f"</tr>"
         for feature in features
-    ) or "<tr><td colspan='4' style='padding:12px'>No activity in this period.</td></tr>"
+    ) or "<tr><td colspan='4' style='padding:12px'>Aucune activité sur cette période.</td></tr>"
 
     bucket_labels = sorted(set(report["usage_buckets"]) | set(report["satisfaction_buckets"]))
     detail_rows = ""
@@ -375,43 +375,43 @@ def render_report_html(report):
                 f"</tr>"
             )
     if not detail_rows:
-        detail_rows = "<tr><td colspan='4' style='padding:12px'>No activity in this period.</td></tr>"
+        detail_rows = "<tr><td colspan='4' style='padding:12px'>Aucune activité sur cette période.</td></tr>"
 
     period = f"{report['start'].date()} — {report['end'].date()}"
 
     return f"""
     <html><body style="font-family:Arial,Helvetica,sans-serif;color:#222">
-      <h2 style="margin-bottom:0">CandyVoice usage &amp; satisfaction report</h2>
+      <h2 style="margin-bottom:0">Rapport d'utilisation et de satisfaction CandyVoice</h2>
       <p style="color:#666;margin-top:4px">{report['range_label']} ({period})</p>
 
-      <h3>Summary</h3>
+      <h3>Résumé</h3>
       <table style="border-collapse:collapse;width:100%;max-width:640px">
         <thead>
           <tr style="text-align:left;border-bottom:2px solid #ccc">
-            <th style="padding:6px 12px">Feature</th>
-            <th style="padding:6px 12px;text-align:right">Unique users</th>
-            <th style="padding:6px 12px;text-align:right">Avg. satisfaction</th>
-            <th style="padding:6px 12px;text-align:right">Ratings</th>
+            <th style="padding:6px 12px">Fonctionnalité</th>
+            <th style="padding:6px 12px;text-align:right">Utilisateurs uniques</th>
+            <th style="padding:6px 12px;text-align:right">Satisfaction moyenne</th>
+            <th style="padding:6px 12px;text-align:right">Évaluations</th>
           </tr>
         </thead>
         <tbody>{summary_rows}</tbody>
       </table>
 
-      <h3 style="margin-top:32px">Breakdown by {'month' if report['range_key'] in {'3months', '6months'} else 'day'}</h3>
+      <h3 style="margin-top:32px">Répartition par {'mois' if report['range_key'] in {'3months', '6months'} else 'jour'}</h3>
       <table style="border-collapse:collapse;width:100%;max-width:640px;font-size:13px">
         <thead>
           <tr style="text-align:left;border-bottom:2px solid #ccc">
-            <th style="padding:4px 12px">Period</th>
-            <th style="padding:4px 12px">Feature</th>
-            <th style="padding:4px 12px;text-align:right">Unique users</th>
-            <th style="padding:4px 12px;text-align:right">Avg. satisfaction</th>
+            <th style="padding:4px 12px">Période</th>
+            <th style="padding:4px 12px">Fonctionnalité</th>
+            <th style="padding:4px 12px;text-align:right">Utilisateurs uniques</th>
+            <th style="padding:4px 12px;text-align:right">Satisfaction moyenne</th>
           </tr>
         </thead>
         <tbody>{detail_rows}</tbody>
       </table>
 
       <p style="color:#999;font-size:12px;margin-top:32px">
-        Generated automatically from CandyVoice's usageEvents / satisfactionEvents data.
+        Généré automatiquement à partir des données usageEvents / satisfactionEvents de CandyVoice.
       </p>
     </body></html>
     """
@@ -431,16 +431,17 @@ def send_report_email(report):
     filename = f"candyvoice-report-{report['range_key']}-{report['end'].date()}.xlsx"
 
     message = MIMEMultipart("mixed")
-    message["Subject"] = f"CandyVoice report — {report['range_label']}"
+    message["Subject"] = f"Rapport CandyVoice — {report['range_label']}"
     message["From"] = f"{config.SMTP2GO_FROM_NAME} <{config.SMTP2GO_FROM_EMAIL}>"
     message["To"] = ", ".join(config.ADMIN_REPORT_RECIPIENTS)
 
     body_text = (
-        f"CandyVoice usage & satisfaction report — {report['range_label']} ({period}).\n\n"
-        f"See the attached workbook ({filename}): a Summary sheet with per-feature "
-        f"totals and charts, plus Usage detail / Satisfaction detail sheets broken "
-        f"down by {'month' if report['range_key'] in _MONTH_BUCKETED_RANGES else 'day'}, "
-        f"each with its own trend chart."
+        f"Rapport d'utilisation et de satisfaction CandyVoice — {report['range_label']} ({period}).\n\n"
+        f"Consultez le classeur joint ({filename}) : une feuille Résumé avec les totaux "
+        f"et graphiques par fonctionnalité, ainsi que des feuilles Détail utilisation / "
+        f"Détail satisfaction réparties par "
+        f"{'mois' if report['range_key'] in _MONTH_BUCKETED_RANGES else 'jour'}, "
+        f"chacune avec son propre graphique d'évolution."
     )
     message.attach(MIMEText(body_text, "plain"))
 
