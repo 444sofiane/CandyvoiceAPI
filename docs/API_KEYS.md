@@ -359,8 +359,9 @@ quota pendant qu'elle était active.
 
 Remplace `Authorization: Bearer ...` par `X-API-Key`, sur n'importe lequel
 de `/api/noise-filter`, `/api/imitation`, `/api/frame-recovery`,
-`/api/deepfake-detect` (pas le WebSocket `/ws/deepfake` — celui-là est
-propre au navigateur et reste Firebase uniquement).
+`/api/deepfake-detect`. Le WebSocket `/ws/deepfake` accepte aussi une clé
+API — voir [plus bas](#websocket-wsdeepfake-avec-une-clé) — mais sa
+mécanique d'auth diffère un peu puisque ce n'est pas un en-tête.
 
 > Envoyer les deux en-têtes sur une même requête n'est pas une façon
 > supportée de les combiner — `X-API-Key` est essayé en premier. S'il est
@@ -446,6 +447,31 @@ le plafond à vie du site, et il porte un champ `"plan"` :
 ```jsonl
 {"type": "result", "ok": true, "exit_code": 0, "deepfake_percent": 3.1, "threshold_percent": 50.0, "verdict": "genuine", "uid": "uid123", "duration_seconds": 12.4, "files_used": 4, "max_files": 500, "plan": "pro"}
 ```
+
+### WebSocket /ws/deepfake avec une clé
+
+Contrairement aux quatre endpoints HTTP ci-dessus, le WebSocket ne prend
+pas de clé via un en-tête — la connexion elle-même n'a pas de "en-têtes
+de requête" au sens HTTP une fois le handshake terminé. À la place,
+envoie `api_key` au lieu de `token` sur le tout premier message,
+[le message `auth`](API.md#wss-wsdeepfake) :
+
+```json
+{ "type": "auth", "api_key": "cvk_wK8h2s9F3n...Qz" }
+```
+
+Le reste du protocole est identique à celui documenté dans `API.md` —
+`auth_ok`, puis `start`, puis la frame binaire, puis les événements
+`progress`/`result`. Le `result` final se comporte comme celui de la
+version HTTP avec une clé : `files_used`/`max_files` reflètent l'offre de
+la clé et un champ `"plan"` est ajouté.
+
+`token` et `api_key` ne sont pas censés être envoyés ensemble ; si les
+deux sont présents, `api_key` est essayé en premier, avec le même repli
+vers `token` en cas de clé invalide que sur le chemin HTTP (voir
+l'encart plus haut). Un `api_key` manquant/invalide sans `token` de
+secours ferme la connexion avec le même comportement `1013`/violation de
+protocole que pour un `token` invalide.
 
 ## Erreurs spécifiques aux clés
 

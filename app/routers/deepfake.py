@@ -8,8 +8,11 @@ from fastapi.responses import StreamingResponse
 from app import config
 from app.deps import AuthContext, get_current_uid_rate_limited, verify_websocket_token, check_rate_limit, RateLimitExceededError
 from app.services import audio
+from app.services.api_key_quota import plan_rate_limit
+from app.services.api_keys import resolve_api_key
 from app.services.deepfake_flow import run_deepfake_stream
 from app.services.deepfake_prepare import finalize_deepfake_result, prepare_deepfake_job
+from app.services.firebase import FirestoreUnavailableError
 
 router = APIRouter()
 
@@ -66,6 +69,7 @@ async def deepfake_detect(
 # ---------------------------------------------------------------------
 # Route WebSocket — le nouveau chemin façon SaaS. Protocole :
 #   client -> {"type": "auth", "token": "<firebase id token>"}
+#             ou {"type": "auth", "api_key": "<clé API>"}
 #   serveur -> {"type": "auth_ok"}                    (ou erreur + fermeture)
 #   client -> {"type": "start", "file_name": "clip.wav"}
 #   client -> <frame binaire : octets bruts du fichier>
@@ -93,21 +97,51 @@ async def deepfake_ws(ws: WebSocket):
         await ws.close(code=WS_POLICY_VIOLATION, reason="Expected an auth message first")
         return
 
-    if first.get("type") != "auth" or not first.get("token"):
-        await ws.send_json({"type": "error", "error": "First message must be {type: 'auth', token: ...}"})
+    api_key = first.get("api_key")
+    token = first.get("token")
+    if first.get("type") != "auth" or not (token or api_key):
+        await ws.send_json({
+            "type": "error",
+            "error": "First message must be {type: 'auth', token: ...} or {type: 'auth', api_key: ...}",
+        })
         await ws.close(code=WS_POLICY_VIOLATION)
         return
 
-    try:
-        decoded_token = await verify_websocket_token(first["token"])
-    except ValueError as exc:
-        await ws.send_json({"type": "error", "error": str(exc)})
-        await ws.close(code=WS_POLICY_VIOLATION)
-        return
+    if api_key:
+        # Appelant serveur-à-serveur par clé API — pas de limitation de
+        # navigateur ici (contrairement au bearer token, qui passe par le
+        # premier message WS uniquement parce qu'un navigateur ne peut pas
+        # joindre d'en-tête personnalisé au handshake). Même précédence
+        # clé-avant-bearer et même repli que get_current_auth côté HTTP.
+        try:
+            record = resolve_api_key(api_key)
+        except FirestoreUnavailableError as exc:
+            await ws.send_json({"type": "error", "error": str(exc)})
+            await ws.close(code=1013)
+            return
+        if not record:
+            await ws.send_json({"type": "error", "error": "Invalid or revoked API key"})
+            await ws.close(code=WS_POLICY_VIOLATION)
+            return
+        auth = AuthContext(uid=record.uid, auth_method="api_key", key_id=record.key_id, plan=record.plan)
+    else:
+        try:
+            decoded_token = await verify_websocket_token(token)
+        except ValueError as exc:
+            await ws.send_json({"type": "error", "error": str(exc)})
+            await ws.close(code=WS_POLICY_VIOLATION)
+            return
+        auth = AuthContext(uid=decoded_token.get("uid"), auth_method="firebase")
 
-    uid = decoded_token.get("uid")
+    if auth.auth_method == "api_key":
+        max_requests, window_seconds = plan_rate_limit(auth.plan)
+        bucket_key = f"apikey:{auth.key_id}"
+    else:
+        max_requests, window_seconds = None, None
+        bucket_key = auth.uid
+
     try:
-        check_rate_limit(uid)
+        check_rate_limit(bucket_key, max_requests, window_seconds)
     except RateLimitExceededError as exc:
         await ws.send_json({"type": "error", "error": str(exc)})
         await ws.close(code=1013)  # "réessaie plus tard"
@@ -149,9 +183,6 @@ async def deepfake_ws(ws: WebSocket):
         return
 
     # --- préparation (upload/durée/quota/commande) -----------------------
-    # L'auth WS est Firebase uniquement (voir la docstring du module) —
-    # pas de chemin par clé API ici.
-    auth = AuthContext(uid=uid, auth_method="firebase")
     try:
         job = await asyncio.to_thread(prepare_deepfake_job, auth, raw_body, file_name)
     except HTTPException as exc:
@@ -170,7 +201,7 @@ async def deepfake_ws(ws: WebSocket):
             # WebSocketDisconnect ici faisait un `return` immédiat sans
             # aller jusqu'à "__done__", ce qui fuyait la réservation
             # indéfiniment.
-            final_event = await asyncio.to_thread(finalize_deepfake_result, event, job, uid)
+            final_event = await asyncio.to_thread(finalize_deepfake_result, event, job, auth.uid)
             if not disconnected:
                 try:
                     await ws.send_json(final_event)
