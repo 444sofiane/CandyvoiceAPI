@@ -8,6 +8,7 @@ import hashlib
 import secrets
 from dataclasses import dataclass
 
+from firebase_admin import auth as firebase_auth
 from firebase_admin import firestore as admin_firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
 
@@ -15,6 +16,7 @@ from app import config
 from app.services.firebase import get_firestore_client
 
 _COLLECTION = "apiKeys"
+_GET_USERS_MAX_BATCH = 100  # firebase_admin.auth.get_users' documented per-call cap
 
 
 @dataclass
@@ -102,14 +104,36 @@ def list_api_keys_for_uid(uid: str) -> list[dict]:
     ]
 
 
+def _resolve_emails(uids: list[str]) -> dict[str, str | None]:
+    """Batch-resolves Firebase Auth emails for `uids` — chunked at
+    get_users()'s documented 100-identifier-per-call cap, so this stays a
+    handful of round-trips even for a full page, not one lookup per uid.
+    A uid Firebase Auth doesn't recognize (e.g. a deleted account) or a
+    Firestore/Auth hiccup just means that uid is absent from the returned
+    dict — callers should use .get(uid), not [uid]."""
+    unique_uids = list(dict.fromkeys(u for u in uids if u))
+    emails: dict[str, str | None] = {}
+
+    for i in range(0, len(unique_uids), _GET_USERS_MAX_BATCH):
+        chunk = unique_uids[i:i + _GET_USERS_MAX_BATCH]
+        identifiers = [firebase_auth.UidIdentifier(uid) for uid in chunk]
+        try:
+            result = firebase_auth.get_users(identifiers)
+        except Exception as exc:  # noqa: BLE001 - email is a nice-to-have, never worth failing the list for
+            print(f"Batch email resolution failed for {len(chunk)} uid(s): {exc}")
+            continue
+        for user in result.users:
+            emails[user.uid] = user.email
+
+    return emails
+
+
 def list_all_api_keys(limit: int = 50, cursor: str | None = None) -> tuple[list[dict], str | None]:
     """Returns (keys, next_cursor): up to `limit` keys across *all* users,
-    newest first — for an admin "every key" dashboard, as opposed to
-    list_api_keys_for_uid's self-service, single-user view. Each row is
-    the bare `uid`, not an email — resolving that to something
-    human-readable is left to the caller (e.g. only for the rows
-    currently visible), since doing it here would mean one Firebase Auth
-    lookup per key and get slow as the list grows.
+    newest first, each annotated with its owner's email (via a batched
+    Firebase Auth lookup — see _resolve_emails) — for an admin "every key"
+    dashboard, as opposed to list_api_keys_for_uid's self-service,
+    single-user view.
 
     Pass the returned `next_cursor` back as `cursor` to fetch the next
     page; `next_cursor` is None once there are no more pages."""
@@ -126,17 +150,21 @@ def list_all_api_keys(limit: int = 50, cursor: str | None = None) -> tuple[list[
             query = query.start_after(cursor_doc)
 
     docs = list(query.stream())
+    rows = [(doc.id, doc.to_dict()) for doc in docs]
+    emails = _resolve_emails([data.get("uid") for _, data in rows])
+
     keys = [
         {
-            "key_id": doc.id,
-            "uid": doc.to_dict().get("uid"),
-            "label": doc.to_dict().get("label"),
-            "plan": doc.to_dict().get("plan") or config.DEFAULT_API_KEY_PLAN,
-            "createdAt": doc.to_dict().get("createdAt"),
-            "lastUsedAt": doc.to_dict().get("lastUsedAt"),
-            "revoked": bool(doc.to_dict().get("revoked")),
+            "key_id": key_id,
+            "uid": data.get("uid"),
+            "email": emails.get(data.get("uid")),
+            "label": data.get("label"),
+            "plan": data.get("plan") or config.DEFAULT_API_KEY_PLAN,
+            "createdAt": data.get("createdAt"),
+            "lastUsedAt": data.get("lastUsedAt"),
+            "revoked": bool(data.get("revoked")),
         }
-        for doc in docs
+        for key_id, data in rows
     ]
     next_cursor = docs[-1].id if len(docs) == limit else None
     return keys, next_cursor

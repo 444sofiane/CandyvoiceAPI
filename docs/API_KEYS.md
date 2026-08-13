@@ -245,17 +245,19 @@ curl "https://api.candyvoice.com/api/admin/api-keys/all?limit=50" \
 {
   "ok": true,
   "keys": [
-    { "key_id": "3f9c2a...e01b", "uid": "uid123", "label": "my mobile app", "plan": "pro", "createdAt": "2026-08-12T10:03:00Z", "lastUsedAt": "2026-08-12T14:22:11Z", "revoked": false },
-    { "key_id": "8b1e0f...4a2c", "uid": "uid456", "label": "support-issued", "plan": "pro", "createdAt": "2026-08-10T09:15:00Z", "lastUsedAt": null, "revoked": false }
+    { "key_id": "3f9c2a...e01b", "uid": "uid123", "email": "alice@example.com", "label": "my mobile app", "plan": "pro", "createdAt": "2026-08-12T10:03:00Z", "lastUsedAt": "2026-08-12T14:22:11Z", "revoked": false },
+    { "key_id": "8b1e0f...4a2c", "uid": "uid456", "email": null, "label": "support-issued", "plan": "pro", "createdAt": "2026-08-10T09:15:00Z", "lastUsedAt": null, "revoked": false }
   ],
   "next_cursor": "8b1e0f...4a2c"
 }
 ```
 
-Each row is the bare `uid`, not an email — resolving that to something
-human-readable (e.g. `firebase_admin.auth.get_user(uid)`) is left to your
-admin frontend, and worth doing only for the rows currently on screen
-rather than all 50 up front, since it's one Firebase Auth lookup per uid.
+`email` is resolved from Firebase Auth in one batched lookup per page
+(`firebase_admin.auth.get_users()`, up to 100 uids per call — cheap even
+at the max page size of 200, which is at most 2 calls) rather than one
+lookup per key. It's `null` when that `uid` no longer has a Firebase Auth
+account (e.g. deleted) rather than a failed request — a single unresolved
+email never blocks the rest of the list.
 
 ### `POST /api/admin/api-keys/{key_id}/revoke`
 

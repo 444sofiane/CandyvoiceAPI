@@ -49,9 +49,9 @@ async def list_keys(uid: str, _admin: dict = Depends(require_admin)):
 @router.get("/api/admin/api-keys/all")
 async def list_every_key(limit: int = 50, cursor: str | None = None, _admin: dict = Depends(require_admin)):
     """Every API key across every user, newest first — for an admin
-    dashboard listing keys + plans + owning uid. Each row has a bare
-    `uid`, not an email; resolve that separately (e.g. Firebase Auth
-    lookup, only for rows currently on screen) rather than expect it here.
+    dashboard listing keys + plans + owning uid/email. `email` is
+    batch-resolved from Firebase Auth (see api_keys._resolve_emails) and
+    is `null` if that uid no longer has a Firebase Auth account.
 
     Paginated: pass the response's `next_cursor` back as `?cursor=` to
     fetch the next page. `next_cursor: null` means there are no more."""
