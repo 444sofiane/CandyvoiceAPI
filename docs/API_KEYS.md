@@ -2,7 +2,8 @@
 
 How a signed-in user gets a long-lived API key for their own application,
 how that key behaves differently from a normal Firebase-session call, and
-the staff-only endpoints for managing keys across all users. Companion to
+the staff-only endpoints for managing keys and reporting on usage across
+all users. Companion to
 [`API.md`](API.md) — start there for the processing endpoints themselves;
 this doc only covers what's specific to keys.
 
@@ -291,6 +292,50 @@ curl -X POST https://api.candyvoice.com/api/admin/api-keys/8b1e0f...4a2c/plan \
 ```json
 { "ok": true, "key_id": "8b1e0f...4a2c", "plan": "enterprise" }
 ```
+
+### `POST /api/admin/send-api-usage-report`
+
+Emails a per-user rollup of API-key usage for one calendar month to
+`ADMIN_REPORT_RECIPIENTS` (same mailing list — and same SMTP2GO delivery —
+as the website's own `/api/admin/send-report`; not necessarily identical
+to `ADMIN_EMAILS`, the *access-control* list for these routes). Every
+key's usage — the same per-feature counters `GET
+/api/keys/{key_id}/usage` exposes for one key — is summed per owning
+user, so someone with three keys shows up as one row.
+
+Body (optional):
+
+```json
+{ "period": "2026-07" }
+```
+
+`period` is `"YYYY-MM"`, defaults to the current UTC calendar month if
+omitted, and lets you re-pull a past month on demand rather than only
+ever seeing the month in progress. Malformed value is a `400`.
+
+```bash
+curl -X POST https://api.candyvoice.com/api/admin/send-api-usage-report \
+  -H "Authorization: Bearer $ADMIN_FIREBASE_ID_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{}'
+```
+
+```json
+{ "ok": true, "period": "2026-08", "users": 12, "sentTo": ["jl.crebouw@candyvoice.com"] }
+```
+
+The email itself carries an `.xlsx` attachment — one row per user with
+usage that period (email, uid, plan(s), key count, per-feature file
+counts, total), sorted by total descending. Users with zero API-key
+activity that month aren't included, so the sheet stays focused on
+actual usage rather than every signed-up account. Revoked keys' usage
+still counts — a key revoked mid-month still consumed quota while it was
+active.
+
+> **Not on a schedule yet.** This endpoint has to be triggered — nothing
+> calls it automatically once a month. Wire that up externally (a k8s
+> `CronJob` hitting this endpoint on a schedule, or any other scheduler)
+> if you want it to actually fire monthly on its own.
 
 ## Using a key against the processing endpoints
 

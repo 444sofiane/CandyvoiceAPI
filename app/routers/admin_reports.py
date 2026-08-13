@@ -1,8 +1,11 @@
+from datetime import datetime
+
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from app import config
 from app.deps import get_current_user
+from app.services.api_usage_report import build_api_usage_report, send_api_usage_report_email
 from app.services.reporting import build_report, send_report_email
 
 router = APIRouter()
@@ -16,6 +19,13 @@ class SendReportRequest(BaseModel):
     # admin pull a report for a specific past date instead of always "as of
     # now".
     reference_date: str | None = None
+
+
+class SendApiUsageReportRequest(BaseModel):
+    # Optional "YYYY-MM" — defaults to the current UTC calendar month if
+    # omitted. Lets an admin re-pull a past month's report on demand,
+    # rather than only ever seeing the month in progress.
+    period: str | None = None
 
 
 def require_admin(decoded_token: dict = Depends(get_current_user)) -> dict:
@@ -41,8 +51,6 @@ async def send_report(body: SendReportRequest, _admin: dict = Depends(require_ad
 
     reference_date = None
     if body.reference_date:
-        from datetime import datetime
-
         try:
             reference_date = datetime.strptime(body.reference_date, "%Y-%m-%d").date()
         except ValueError:
@@ -63,5 +71,38 @@ async def send_report(body: SendReportRequest, _admin: dict = Depends(require_ad
     return {
         "ok": True,
         "range": body.range,
+        "sentTo": config.ADMIN_REPORT_RECIPIENTS,
+    }
+
+
+@router.post("/api/admin/send-api-usage-report")
+async def send_api_usage_report(body: SendApiUsageReportRequest, _admin: dict = Depends(require_admin)):
+    """Emails a per-user rollup of API-key usage for one calendar month —
+    every key's usage (the same data GET /api/keys/{key_id}/usage exposes
+    per-key) summed per user, as an .xlsx attachment. See
+    api_usage_report.py for the aggregation itself."""
+    period = None
+    if body.period:
+        try:
+            period = datetime.strptime(body.period, "%Y-%m").strftime("%Y-%m")
+        except ValueError:
+            raise HTTPException(status_code=400, detail="period must be YYYY-MM")
+
+    try:
+        report = build_api_usage_report(period)
+        send_api_usage_report_email(report)
+    except RuntimeError as exc:
+        # Config problems (missing SMTP2GO creds, empty recipient list) —
+        # surface as a clear 500 rather than a generic one, since these are
+        # almost always a one-time setup issue an admin can fix themselves.
+        raise HTTPException(status_code=500, detail=str(exc))
+    except Exception as exc:  # noqa: BLE001
+        print(f"send_api_usage_report failed: {exc}")
+        raise HTTPException(status_code=500, detail="Failed to generate or send the API usage report")
+
+    return {
+        "ok": True,
+        "period": report["period"],
+        "users": len(report["rows"]),
         "sentTo": config.ADMIN_REPORT_RECIPIENTS,
     }

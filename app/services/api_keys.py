@@ -104,7 +104,7 @@ def list_api_keys_for_uid(uid: str) -> list[dict]:
     ]
 
 
-def _resolve_emails(uids: list[str]) -> dict[str, str | None]:
+def resolve_emails(uids: list[str]) -> dict[str, str | None]:
     """Batch-resolves Firebase Auth emails for `uids` — chunked at
     get_users()'s documented 100-identifier-per-call cap, so this stays a
     handful of round-trips even for a full page, not one lookup per uid.
@@ -131,7 +131,7 @@ def _resolve_emails(uids: list[str]) -> dict[str, str | None]:
 def list_all_api_keys(limit: int = 50, cursor: str | None = None) -> tuple[list[dict], str | None]:
     """Returns (keys, next_cursor): up to `limit` keys across *all* users,
     newest first, each annotated with its owner's email (via a batched
-    Firebase Auth lookup — see _resolve_emails) — for an admin "every key"
+    Firebase Auth lookup — see resolve_emails) — for an admin "every key"
     dashboard, as opposed to list_api_keys_for_uid's self-service,
     single-user view.
 
@@ -151,7 +151,7 @@ def list_all_api_keys(limit: int = 50, cursor: str | None = None) -> tuple[list[
 
     docs = list(query.stream())
     rows = [(doc.id, doc.to_dict()) for doc in docs]
-    emails = _resolve_emails([data.get("uid") for _, data in rows])
+    emails = resolve_emails([data.get("uid") for _, data in rows])
 
     keys = [
         {
@@ -168,6 +168,23 @@ def list_all_api_keys(limit: int = 50, cursor: str | None = None) -> tuple[list[
     ]
     next_cursor = docs[-1].id if len(docs) == limit else None
     return keys, next_cursor
+
+
+def list_all_key_records() -> list[dict]:
+    """Every key's (key_id, uid, plan, revoked) — no pagination, no email
+    resolution. For internal batch jobs (e.g. the monthly API usage
+    report — see api_usage_report.py) that need to walk every key, as
+    opposed to list_all_api_keys's paginated admin-dashboard page."""
+    client = get_firestore_client()
+    return [
+        {
+            "key_id": doc.id,
+            "uid": doc.to_dict().get("uid"),
+            "plan": doc.to_dict().get("plan") or config.DEFAULT_API_KEY_PLAN,
+            "revoked": bool(doc.to_dict().get("revoked")),
+        }
+        for doc in client.collection(_COLLECTION).stream()
+    ]
 
 
 def get_api_key_for_owner(key_id: str, owner_uid: str) -> dict | None:

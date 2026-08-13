@@ -12,7 +12,7 @@ from app.services.quota import read_feature_usage_fields
 
 _COLLECTION = "apiKeyUsage"
 
-_ALL_FEATURE_KEYS = (
+ALL_FEATURE_KEYS = (
     config.FEATURE_KEY_NOISE_FILTER,
     config.FEATURE_KEY_IMITATION,
     config.FEATURE_KEY_DEEPFAKE,
@@ -58,6 +58,6 @@ def read_usage_for_key(firestore_client, key_id: str, plan: str) -> dict:
                 "filesUsed": read_feature_usage_fields(snapshot, feature_key)[0],
                 "limit": limit,
             }
-            for feature_key in _ALL_FEATURE_KEYS
+            for feature_key in ALL_FEATURE_KEYS
         },
     }
