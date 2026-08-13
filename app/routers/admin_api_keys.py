@@ -30,15 +30,16 @@ async def create_key(body: CreateApiKeyRequest, _admin: dict = Depends(require_a
     own application sends as X-API-Key instead of a Firebase ID token). The
     raw key is only ever returned here — only its hash is stored, so it
     can't be recovered later. Hand it to the user once, then it's gone."""
-    if not body.uid.strip():
+    uid = body.uid.strip()
+    if not uid:
         raise HTTPException(status_code=400, detail="uid is required")
 
     try:
-        raw_key, key_id = create_api_key(body.uid.strip(), body.label, body.plan)
+        raw_key, key_id = create_api_key(uid, body.label, body.plan)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
-    return {"ok": True, "key_id": key_id, "api_key": raw_key, "uid": body.uid, "label": body.label, "plan": body.plan}
+    return {"ok": True, "key_id": key_id, "api_key": raw_key, "uid": uid, "label": body.label, "plan": body.plan}
 
 
 @router.get("/api/admin/api-keys")

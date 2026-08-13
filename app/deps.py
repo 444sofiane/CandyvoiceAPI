@@ -101,17 +101,21 @@ async def get_current_auth(
 ) -> AuthContext:
     """Accepts either an API key (X-API-Key header — for server-to-server
     callers with their own application, issued via /api/keys) or a Firebase
-    ID token (Authorization: Bearer ...). The API key takes precedence when
-    both are present, since a caller using one wouldn't be expected to send
-    the other."""
+    ID token (Authorization: Bearer ...). The API key is tried first when
+    present, since a caller using one wouldn't normally send the other —
+    but an invalid/revoked key doesn't shadow an otherwise-valid bearer
+    token if one was also sent (e.g. a stale key left over from testing
+    alongside a real browser session): only 401 on the key specifically
+    when there's no bearer token to fall back to."""
     if x_api_key:
         try:
             record = resolve_api_key(x_api_key)
         except FirestoreUnavailableError as exc:
             raise HTTPException(status_code=503, detail=str(exc))
-        if not record:
+        if record:
+            return AuthContext(uid=record.uid, auth_method="api_key", key_id=record.key_id, plan=record.plan)
+        if not authorization:
             raise HTTPException(status_code=401, detail="Invalid or revoked API key")
-        return AuthContext(uid=record.uid, auth_method="api_key", key_id=record.key_id, plan=record.plan)
 
     decoded_token = _verify_bearer_token(authorization)
     return AuthContext(uid=decoded_token.get("uid"), auth_method="firebase")

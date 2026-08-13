@@ -91,17 +91,18 @@ def list_api_keys_for_uid(uid: str) -> list[dict]:
     every key issued to `uid`, for display on an account/keys page."""
     client = get_firestore_client()
     query = client.collection(_COLLECTION).where(filter=FieldFilter("uid", "==", uid))
-    return [
-        {
+    keys = []
+    for doc in query.stream():
+        data = doc.to_dict()
+        keys.append({
             "key_id": doc.id,
-            "label": doc.to_dict().get("label"),
-            "plan": doc.to_dict().get("plan") or config.DEFAULT_API_KEY_PLAN,
-            "createdAt": doc.to_dict().get("createdAt"),
-            "lastUsedAt": doc.to_dict().get("lastUsedAt"),
-            "revoked": bool(doc.to_dict().get("revoked")),
-        }
-        for doc in query.stream()
-    ]
+            "label": data.get("label"),
+            "plan": data.get("plan") or config.DEFAULT_API_KEY_PLAN,
+            "createdAt": data.get("createdAt"),
+            "lastUsedAt": data.get("lastUsedAt"),
+            "revoked": bool(data.get("revoked")),
+        })
+    return keys
 
 
 def resolve_emails(uids: list[str]) -> dict[str, str | None]:

@@ -18,7 +18,7 @@ from app.services import quota
 
 
 def test_reserve_then_commit_moves_slot_from_reserved_to_used(db, usage_ref):
-    quota.reserve_usage_file(db.transaction(), usage_ref, "noiseFilter")
+    quota.reserve_usage_file(db.transaction(), usage_ref, "noiseFilter", config.MAX_FILES_PER_FEATURE)
     used, reserved = quota.read_feature_usage_fields(usage_ref.get(), "noiseFilter")
     assert (used, reserved) == (0, 1)
 
@@ -30,7 +30,7 @@ def test_reserve_then_commit_moves_slot_from_reserved_to_used(db, usage_ref):
 
 
 def test_release_after_failed_processing_frees_the_slot(db, usage_ref):
-    quota.reserve_usage_file(db.transaction(), usage_ref, "imitation")
+    quota.reserve_usage_file(db.transaction(), usage_ref, "imitation", config.MAX_FILES_PER_FEATURE)
     quota.release_reserved_file(db.transaction(), usage_ref, "imitation")
 
     used, reserved = quota.read_feature_usage_fields(usage_ref.get(), "imitation")
@@ -47,7 +47,7 @@ def test_release_is_never_negative_if_called_twice(db, usage_ref):
     # matters because release_quota_safely (used in except blocks) can in
     # principle be reached more than once for the same reservation on some
     # error paths.
-    quota.reserve_usage_file(db.transaction(), usage_ref, "frameRecovery")
+    quota.reserve_usage_file(db.transaction(), usage_ref, "frameRecovery", config.MAX_FILES_PER_FEATURE)
     quota.release_reserved_file(db.transaction(), usage_ref, "frameRecovery")
     quota.release_reserved_file(db.transaction(), usage_ref, "frameRecovery")
 
@@ -57,11 +57,11 @@ def test_release_is_never_negative_if_called_twice(db, usage_ref):
 
 def test_reserve_fails_once_quota_ceiling_reached(db, usage_ref):
     for _ in range(config.MAX_FILES_PER_FEATURE):
-        quota.reserve_usage_file(db.transaction(), usage_ref, "deepfake")
+        quota.reserve_usage_file(db.transaction(), usage_ref, "deepfake", config.MAX_FILES_PER_FEATURE)
         quota.commit_reserved_file(db.transaction(), usage_ref, "deepfake")
 
     with pytest.raises(quota.QuotaExceededError):
-        quota.reserve_usage_file(db.transaction(), usage_ref, "deepfake")
+        quota.reserve_usage_file(db.transaction(), usage_ref, "deepfake", config.MAX_FILES_PER_FEATURE)
 
     # and the failed attempt must not have mutated anything
     used, reserved = quota.read_feature_usage_fields(usage_ref.get(), "deepfake")
@@ -76,7 +76,7 @@ def test_concurrent_reserve_at_last_slot_only_one_wins(db, usage_ref):
     reservation, no corrupted doc. This is the concurrency-under-load
     scenario the module docstring's incident report describes."""
     for _ in range(config.MAX_FILES_PER_FEATURE - 1):
-        quota.reserve_usage_file(db.transaction(), usage_ref, "frameRecovery")
+        quota.reserve_usage_file(db.transaction(), usage_ref, "frameRecovery", config.MAX_FILES_PER_FEATURE)
         quota.commit_reserved_file(db.transaction(), usage_ref, "frameRecovery")
 
     outcomes = []
@@ -84,7 +84,7 @@ def test_concurrent_reserve_at_last_slot_only_one_wins(db, usage_ref):
 
     def attempt():
         try:
-            quota.reserve_usage_file(db.transaction(), usage_ref, "frameRecovery")
+            quota.reserve_usage_file(db.transaction(), usage_ref, "frameRecovery", config.MAX_FILES_PER_FEATURE)
             outcome = "reserved"
         except quota.QuotaExceededError:
             outcome = "exceeded"

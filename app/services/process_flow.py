@@ -31,6 +31,16 @@ def _header_name(key: str) -> str:
     return "-".join(word.capitalize() for word in key.split("_"))
 
 
+def _header_value(value) -> str:
+    """Strips CR/LF before a value goes into a response header. Every
+    current caller (voice_model, frame_recovery_factor, uid, plan) is
+    already allowlisted/bounded upstream, so this is defense in depth
+    rather than a fix for a reachable bug today — but header-building
+    shouldn't rely on that staying true for every future field someone
+    adds to extra_response_fields."""
+    return str(value).replace("\r", "").replace("\n", "")
+
+
 def run_feature_processing(
     *,
     auth: AuthContext,
@@ -192,15 +202,24 @@ def run_feature_processing(
         audio.cleanup_file(input_path)
 
         headers = {
-            "X-Exit-Code": str(completed.returncode),
-            "X-Uid": uid,
-            "X-Duration-Seconds": str(duration_seconds),
-            "X-Files-Used": "" if files_used is None else str(files_used),
-            "X-Max-Files": "" if max_files is None else str(max_files),
-            "X-Plan": auth.plan or "",
+            "X-Exit-Code": _header_value(completed.returncode),
+            "X-Uid": _header_value(uid),
+            "X-Duration-Seconds": _header_value(duration_seconds),
+            "X-Files-Used": "" if files_used is None else _header_value(files_used),
+            "X-Max-Files": "" if max_files is None else _header_value(max_files),
+            "X-Plan": _header_value(auth.plan or ""),
         }
+        if files_used is None:
+            # Mirrors the Firebase-session JSON path's usage_warning field —
+            # processing succeeded but quota tracking may be off, and an
+            # API-key caller reading X-Files-Used shouldn't mistake an empty
+            # value for "zero used" with no explanation.
+            headers["X-Usage-Warning"] = _header_value(
+                f"{error_label.capitalize()} succeeded, but quota could not be recorded. "
+                "Please contact support if this persists."
+            )
         for field_name, value in extra_response_fields.items():
-            headers[f"X-{_header_name(field_name)}"] = str(value)
+            headers[f"X-{_header_name(field_name)}"] = _header_value(value)
 
         return Response(content=output_bytes, media_type="audio/wav", headers=headers)
 
