@@ -1,9 +1,9 @@
-"""Per-API-key, per-calendar-month, per-feature quota — separate from the
-website's lifetime usage/{uid} counters (quota.py, used by the
-Firebase-session path), since API-key usage is billed against a plan with
-its own monthly allowance that has to reset. Reuses the same
-reserve/commit/release transaction primitives from quota.py; only the
-Firestore document identity and the allowance value differ.
+"""Quota par clé API, par mois calendaire, par fonctionnalité — distinct
+des compteurs à vie usage/{uid} du site (quota.py, utilisé par le chemin
+session Firebase), puisque l'usage par clé API est facturé selon une offre
+avec sa propre allocation mensuelle qui doit se réinitialiser. Réutilise
+les mêmes primitives de transaction reserve/commit/release de quota.py ;
+seuls l'identité du document Firestore et la valeur d'allocation diffèrent.
 """
 from datetime import datetime, timezone
 
@@ -21,8 +21,9 @@ ALL_FEATURE_KEYS = (
 
 
 def current_period() -> str:
-    """Calendar month in UTC, e.g. "2026-08" — a key's usage resets to 0
-    when this rolls over, simply because a new document id starts empty."""
+    """Mois calendaire en UTC, ex. "2026-08" — l'usage d'une clé revient à
+    0 quand ça bascule, simplement parce qu'un nouvel id de document
+    démarre vide."""
     return datetime.now(timezone.utc).strftime("%Y-%m")
 
 
@@ -32,22 +33,23 @@ def usage_doc_ref(firestore_client, key_id: str, period: str | None = None):
 
 
 def plan_file_limit(plan: str) -> int | None:
-    """None means unlimited (Enterprise, until a real per-key custom limit
-    exists — see the TODO on API_KEY_PLANS)."""
+    """None signifie illimité (Enterprise, tant qu'il n'existe pas de vraie
+    limite personnalisée par clé — voir le TODO sur API_KEY_PLANS)."""
     plan_config = config.API_KEY_PLANS.get(plan, config.API_KEY_PLANS[config.DEFAULT_API_KEY_PLAN])
     return plan_config["files_per_feature_per_month"]
 
 
 def plan_rate_limit(plan: str) -> tuple[int, int]:
-    """Returns (max_requests, window_seconds) for `plan`."""
+    """Retourne (max_requests, window_seconds) pour `plan`."""
     plan_config = config.API_KEY_PLANS.get(plan, config.API_KEY_PLANS[config.DEFAULT_API_KEY_PLAN])
     return plan_config["rate_limit_max_requests"], plan_config["rate_limit_window_seconds"]
 
 
 def read_usage_for_key(firestore_client, key_id: str, plan: str) -> dict:
-    """Returns this key's usage for the current billing period, for display
-    on a usage dashboard: {"period": "2026-08", "features": {feature_key:
-    {"filesUsed": int, "limit": int|None}}}."""
+    """Retourne l'usage de cette clé pour la période de facturation en
+    cours, pour affichage sur un tableau de bord d'usage : {"period":
+    "2026-08", "features": {feature_key: {"filesUsed": int,
+    "limit": int|None}}}."""
     period = current_period()
     snapshot = usage_doc_ref(firestore_client, key_id, period).get()
     limit = plan_file_limit(plan)

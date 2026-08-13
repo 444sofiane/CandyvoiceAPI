@@ -1,5 +1,5 @@
-"""Zoho CRM OAuth token management and Attachments API upload, for the CRM leg of the confidentiality
-workflow."""
+"""Gestion des tokens OAuth Zoho CRM et upload via l'API Attachments, pour
+le volet CRM du workflow de confidentialité."""
 
 import os
 import re
@@ -18,23 +18,25 @@ class ZohoTokenError(RuntimeError):
 
 
 def save_processed_output_record(uid, feature, output_path, input_path=None, original_file_name=None):
-    """Stores processed outputs for later CRM analysis. Never raises — a
-    metadata-persistence failure must not fail an otherwise successful
-    processing request.
+    """Stocke les sorties traitées pour une analyse CRM ultérieure. Ne
+    lève jamais — un échec de persistance des métadonnées ne doit pas
+    faire échouer une requête de traitement par ailleurs réussie.
 
-    `input_path` is optional so older call sites (and any other future
-    caller that doesn't have an input file handy) keep working — the
-    unsatisfied-webhook flow simply skips attaching an input for docs
-    where it's absent. Symmetrically, `output_path` may be None for a
-    feature that has no processed output of its own (e.g. deepfake
-    detection, which only returns a score) — the webhook flow then
-    attaches just the input.
+    `input_path` est optionnel pour que les anciens sites d'appel (et tout
+    futur appelant qui n'a pas de fichier d'entrée sous la main) continuent
+    de fonctionner — le flux du webhook d'insatisfaction saute simplement
+    l'attachement d'une entrée pour les docs où elle est absente.
+    Symétriquement, `output_path` peut valoir None pour une fonctionnalité
+    qui n'a pas de sortie traitée propre (ex. la détection de deepfake, qui
+    ne retourne qu'un score) — le flux du webhook attache alors juste
+    l'entrée.
 
-    `original_file_name` is the name the user's browser sent (the
-    X-File-Name header), before it gets mangled into
-    "{uid}_{uuid}_{name}" on disk. Stored separately rather than
-    reverse-parsed out of that mangled name later, since a Firebase uid
-    can itself contain underscores — parsing it back out isn't reliable.
+    `original_file_name` est le nom envoyé par le navigateur de
+    l'utilisateur (l'en-tête X-File-Name), avant qu'il ne soit transformé
+    en "{uid}_{uuid}_{name}" sur disque. Stocké séparément plutôt que
+    reparsé en sens inverse à partir de ce nom transformé plus tard,
+    puisqu'un uid Firebase peut lui-même contenir des underscores —
+    l'extraire par parsing inverse n'est pas fiable.
     """
     try:
         client = get_firestore_client()
@@ -60,15 +62,18 @@ def save_processed_output_record(uid, feature, output_path, input_path=None, ori
 
 
 def log_usage_event(uid, feature):
-    """Records one discrete "a file was successfully processed" event, in
-    addition to the running filesUsed counter on usage/{uid}. Never raises —
-    mirrors save_processed_output_record's best-effort pattern, since this is
-    purely for later reporting (day/month breakdowns in Zoho Analytics) and
-    must never block or fail an otherwise successful processing request.
+    """Enregistre un événement discret "un fichier a été traité avec
+    succès", en plus du compteur courant filesUsed sur usage/{uid}. Ne
+    lève jamais — reflète le principe au mieux sans garantie de
+    save_processed_output_record, puisque ceci est purement pour du
+    reporting ultérieur (répartitions par jour/mois dans Zoho Analytics)
+    et ne doit jamais bloquer ni faire échouer une requête de traitement
+    par ailleurs réussie.
 
-    dateKey is a plain "YYYY-MM-DD" string (UTC) alongside the real
-    timestamp, so Zoho Analytics / any report can group by day without
-    needing timezone-aware date-truncation logic on the timestamp field.
+    dateKey est une simple chaîne "YYYY-MM-DD" (UTC) à côté du vrai
+    timestamp, pour que Zoho Analytics / n'importe quel rapport puisse
+    grouper par jour sans avoir besoin de logique de troncature de date
+    sensible au fuseau horaire sur le champ timestamp.
     """
     try:
         from datetime import datetime, timezone
@@ -87,16 +92,16 @@ def log_usage_event(uid, feature):
 
 
 def get_contact_id_by_email(email):
-    """Looks up a Contact's record id by email. Returns None if no
-    contact matches — the caller decides whether that's an error or a
-    silent skip."""
+    """Recherche l'id de fiche d'un Contact par e-mail. Retourne None si
+    aucun contact ne correspond — c'est à l'appelant de décider si c'est
+    une erreur ou un abandon silencieux."""
     response = requests.get(
         f"{config.ZOHO_API_DOMAIN}/crm/v8/Contacts/search",
         headers=_auth_headers(),
         params={"criteria": f"(Email:equals:{email})"},
         timeout=30,
     )
-    if response.status_code == 204:  # Zoho returns 204, not an empty 200, for "no matches"
+    if response.status_code == 204:  # Zoho retourne 204, pas un 200 vide, pour "aucune correspondance"
         return None
     response.raise_for_status()
     records = response.json().get("data", [])
@@ -104,13 +109,14 @@ def get_contact_id_by_email(email):
 
 
 def get_unuploaded_outputs(firestore_client, uid, limit=None):
-    """Returns every not-yet-uploaded, non-confidential processedOutputs doc
-    for this user, newest first, capped at `limit` (defaults to
-    config.MAX_UNSATISFIED_ATTACHMENTS) so a single webhook call can't try
-    to process an unbounded backlog. Kept newest-first (same direction as
-    the previous single-doc version) so it reuses the same composite index
-    (uid, uploadedToZoho, confidential, createdAt) rather than requiring a
-    new one."""
+    """Retourne chaque doc processedOutputs pas encore uploadé et non
+    confidentiel pour cet utilisateur, du plus récent au plus ancien,
+    plafonné à `limit` (par défaut config.MAX_UNSATISFIED_ATTACHMENTS)
+    pour qu'un seul appel de webhook ne puisse pas essayer de traiter un
+    backlog illimité. Gardé du plus récent au plus ancien (même sens que
+    la précédente version à un seul doc) pour réutiliser le même index
+    composite (uid, uploadedToZoho, confidential, createdAt) plutôt que
+    d'en exiger un nouveau."""
     if limit is None:
         limit = config.MAX_UNSATISFIED_ATTACHMENTS
     query = (
@@ -125,34 +131,38 @@ def get_unuploaded_outputs(firestore_client, uid, limit=None):
 
 
 def build_attachment_filename(feature, created_at, kind, original_path, original_file_name=None):
-    """Builds a human-readable name for a Zoho attachment. `kind` is
-    "input" or "output".
+    """Construit un nom lisible pour une pièce jointe Zoho. `kind` vaut
+    "input" ou "output".
 
-    When the customer's original filename is known (original_file_name —
-    stored on the doc since save_processed_output_record started
-    recording it; see that function's docstring for why it isn't just
-    reverse-parsed out of the on-disk path instead), it leads the
-    attachment name, e.g.
-    'VoixEtBruit90dB_noise-filter_output_2026-08-06_16h27m22s.wav' — so
-    support can reference "the VoixEtBruit90dB file" when following up
-    with a customer. Falls back to
-    'noise-filter_2026-08-06_16h27m22s_output.wav' for older docs saved
-    before this field existed.
+    Quand le nom de fichier original du client est connu
+    (original_file_name — stocké sur le doc depuis que
+    save_processed_output_record a commencé à l'enregistrer ; voir la
+    docstring de cette fonction pour savoir pourquoi il n'est pas
+    simplement reparsé en sens inverse à partir du chemin sur disque à la
+    place), il ouvre le nom de la pièce jointe, ex.
+    'VoixEtBruit90dB_noise-filter_output_2026-08-06_16h27m22s.wav' — pour
+    que le support puisse référencer "le fichier VoixEtBruit90dB" en
+    faisant un suivi avec un client. Retombe sur
+    'noise-filter_2026-08-06_16h27m22s_output.wav' pour les anciens docs
+    sauvegardés avant que ce champ n'existe.
 
-    The feature name stays in both forms — the same original file can be
-    submitted to more than one feature (e.g. the same recording run
-    through both NoizOff and Voice Imitation), and without it those two
-    outputs would be indistinguishable except by timestamp.
+    Le nom de la fonctionnalité reste dans les deux formes — le même
+    fichier original peut être soumis à plus d'une fonctionnalité (ex. le
+    même enregistrement passé à la fois par NoizOff et Voice Imitation),
+    et sans ça ces deux sorties seraient indiscernables sauf par
+    timestamp.
 
-    A date+time also stays in the name either way, to keep it unique:
-    with names that collide exactly, Zoho silently appends its own
-    timestamp suffix to the second+ upload sharing a filename, which
-    reads as a rename/duplication bug from the CRM side rather than what
-    it actually is (several distinct files, ambiguously named — e.g. a
-    customer re-testing with a file of the same name twice in one day).
-    An input and its matching output share the same `created_at` (both
-    come from the same processedOutputs doc), so they still end up as a
-    clearly paired set in Zoho's attachment list either way.
+    Une date+heure reste aussi dans le nom dans les deux cas, pour rester
+    unique : avec des noms qui entrent exactement en collision, Zoho
+    ajoute silencieusement son propre suffixe de timestamp au deuxième
+    upload et suivants partageant un nom de fichier, ce qui se lit comme
+    un bug de renommage/duplication côté CRM plutôt que ce que c'est
+    réellement (plusieurs fichiers distincts, nommés de façon ambiguë —
+    ex. un client qui refait un test avec un fichier du même nom deux
+    fois dans la même journée). Une entrée et sa sortie correspondante
+    partagent le même `created_at` (les deux viennent du même doc
+    processedOutputs), donc elles finissent quand même comme une paire
+    clairement identifiable dans la liste de pièces jointes de Zoho.
     """
     ext = os.path.splitext(original_path)[1]
     date_str = created_at.strftime("%Y-%m-%d_%Hh%Mm%Ss") if created_at else "unknown-date"
@@ -160,13 +170,13 @@ def build_attachment_filename(feature, created_at, kind, original_path, original
 
     if original_file_name:
         stem = os.path.splitext(os.path.basename(original_file_name))[0]
-        # Keep it close to what the customer actually named their file —
-        # only swap out characters that are awkward in a filename Zoho
-        # will display and let someone click on.
+        # Reste proche du nom que le client a réellement donné à son
+        # fichier — remplace seulement les caractères gênants dans un nom
+        # de fichier que Zoho va afficher et laisser quelqu'un cliquer.
         safe_stem = re.sub(r"[^\w\-. ]+", "_", stem).strip() or "file"
         return f"{safe_stem}_{safe_feature}_{kind}_{date_str}{ext}"
 
-    # Fallback for docs saved before original_file_name existed.
+    # Repli pour les docs sauvegardés avant que original_file_name n'existe.
     return f"{safe_feature}_{date_str}_{kind}{ext}"
 
 _access_token = None
@@ -174,10 +184,11 @@ _expires_at = 0.0
 
 
 def get_access_token():
-    """Returns a cached access token, refreshing via ZOHO_REFRESH_TOKEN
-    when expired. Not thread-safe against a first concurrent refresh race,
-    but a duplicate refresh call is harmless (Zoho just issues another
-    valid access token), so no lock is needed here."""
+    """Retourne un access token mis en cache, en le rafraîchissant via
+    ZOHO_REFRESH_TOKEN une fois expiré. Pas thread-safe contre une
+    première course de rafraîchissement concurrent, mais un appel de
+    rafraîchissement en double est inoffensif (Zoho émet juste un autre
+    access token valide), donc aucun verrou n'est nécessaire ici."""
     global _access_token, _expires_at
 
     if _access_token and time.time() < _expires_at - 60:
@@ -226,9 +237,10 @@ def update_contact_confidential_flag(record_id, is_confidential):
     return result
 
 def sync_confidential_flag_to_zoho(uid, confidential):
-    """Reflects the confidentiality flag the user declared for their most
-    recent file onto their Zoho Contact record. Never raises — a Zoho sync
-    hiccup here must not block file processing itself."""
+    """Répercute sur la fiche Contact Zoho de l'utilisateur le drapeau de
+    confidentialité qu'il a déclaré pour son fichier le plus récent. Ne
+    lève jamais — un pépin de synchro Zoho ici ne doit pas bloquer le
+    traitement du fichier lui-même."""
     try:
         from firebase_admin import auth as firebase_auth
 
@@ -247,9 +259,10 @@ def sync_confidential_flag_to_zoho(uid, confidential):
 
 
 def upload_file_to_zoho(file_path, record_id, display_filename):
-    """Uploads `file_path` as an Attachment on Zoho Contact `record_id`,
-    shown in Zoho as `display_filename` rather than the file's raw name on
-    disk (which is an internal '{uid}_{uuid}_{original name}' string)."""
+    """Upload `file_path` comme pièce jointe sur le Contact Zoho
+    `record_id`, affiché dans Zoho comme `display_filename` plutôt que le
+    nom brut du fichier sur disque (qui est une chaîne interne
+    '{uid}_{uuid}_{nom original}')."""
     with open(file_path, "rb") as handle:
         response = requests.post(
             f"{config.ZOHO_API_DOMAIN}/crm/v8/Contacts/{record_id}/Attachments",

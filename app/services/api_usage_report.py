@@ -1,9 +1,10 @@
-"""Monthly API-key usage report, rolled up per user, emailed to admins.
-Complements reporting.py's website usage/satisfaction report — separate
-module because the source data is completely different (apiKeys /
-apiKeyUsage, not usageEvents/satisfactionEvents) even though the shape of
-"aggregate something, build a workbook, email it via SMTP2GO" is the same
-pattern.
+"""Rapport mensuel d'usage des clés API, agrégé par utilisateur, envoyé
+par e-mail aux admins. Complète le rapport d'usage/satisfaction du site de
+reporting.py — module séparé parce que les données source sont
+complètement différentes (apiKeys / apiKeyUsage, pas
+usageEvents/satisfactionEvents) même si la forme "agréger quelque chose,
+construire un classeur, l'envoyer par e-mail via SMTP2GO" suit le même
+schéma.
 """
 import io
 import smtplib
@@ -27,20 +28,21 @@ _HEADER_FONT = Font(color="FFFFFF", bold=True)
 
 
 def build_api_usage_report(period: str | None = None) -> dict:
-    """Aggregates every API key's usage for `period` ("YYYY-MM", defaults
-    to the current UTC calendar month) into one row per user — the same
-    underlying per-key/per-feature counters GET /api/keys/{key_id}/usage
-    exposes, just summed across all of a user's keys instead of shown one
-    key at a time.
+    """Agrège l'usage de chaque clé API pour `period` ("YYYY-MM", par
+    défaut le mois calendaire UTC en cours) en une ligne par utilisateur —
+    les mêmes compteurs par clé/par fonctionnalité sous-jacents que GET
+    /api/keys/{key_id}/usage expose, juste sommés sur toutes les clés d'un
+    utilisateur plutôt que montrés une clé à la fois.
 
-    Includes revoked keys' usage — a key revoked mid-month still consumed
-    quota that month, and this is a usage report, not an active-keys list.
-    Users with zero usage this period are omitted, so the report stays
-    focused on actual activity rather than listing every signed-up user.
+    Inclut l'usage des clés révoquées — une clé révoquée en milieu de mois
+    a quand même consommé du quota ce mois-là, et ceci est un rapport
+    d'usage, pas une liste de clés actives. Les utilisateurs avec un usage
+    nul sur cette période sont omis, pour que le rapport reste centré sur
+    l'activité réelle plutôt que de lister chaque utilisateur inscrit.
 
-    Returns {"period": ..., "rows": [{"uid", "email", "plans", "key_count",
-    "usage": {feature_key: int}, "total": int}, ...]}, rows sorted by
-    `total` descending."""
+    Retourne {"period": ..., "rows": [{"uid", "email", "plans",
+    "key_count", "usage": {feature_key: int}, "total": int}, ...]}, lignes
+    triées par `total` décroissant."""
     period = period or current_period()
     firestore_client = get_firestore_client()
     key_records = list_all_key_records()
@@ -93,8 +95,9 @@ def _style_header_row(ws, row_idx, num_cols):
 
 
 def build_api_usage_report_workbook(report: dict) -> bytes:
-    """One sheet, one row per user with usage this period: email, uid,
-    plan(s), key count, a column per feature, and a total."""
+    """Une feuille, une ligne par utilisateur avec de l'usage cette
+    période : e-mail, uid, offre(s), nombre de clés, une colonne par
+    fonctionnalité, et un total."""
     wb = Workbook()
     ws = wb.active
     ws.title = "Utilisation par utilisateur"

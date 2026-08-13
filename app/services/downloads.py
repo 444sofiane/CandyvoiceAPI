@@ -1,7 +1,8 @@
-"""Signed, short-lived download tokens for /outputs/, plus the background
-TTL cleanup for processed output files. Ported 1:1 from api_server.py —
-<audio src>/<a href> can't send an Authorization header, so ownership on
-those GETs is enforced via a signed, expiring token embedded in the URL.
+"""Tokens de téléchargement signés à courte durée de vie pour /outputs/,
+plus le nettoyage par TTL en arrière-plan des fichiers de sortie traités.
+Porté 1:1 depuis api_server.py — <audio src>/<a href> ne peuvent pas
+envoyer d'en-tête Authorization, donc la propriété sur ces GET est
+appliquée via un token signé et expirant, intégré dans l'URL.
 """
 import asyncio
 import hashlib
@@ -12,8 +13,9 @@ import time
 
 from app import config
 
-# How often the backstop sweep (see periodic_cleanup_sweep below) re-scans
-# uploads/outputs, independent of the per-file threading.Timer cleanups.
+# Fréquence à laquelle le balayage de secours (voir periodic_cleanup_sweep
+# ci-dessous) rescanne uploads/outputs, indépendamment des nettoyages par
+# threading.Timer par fichier.
 CLEANUP_SWEEP_INTERVAL_SECONDS = int(os.environ.get("CLEANUP_SWEEP_INTERVAL_SECONDS", "300"))
 
 
@@ -41,10 +43,12 @@ def verify_download_token(filename, token):
 
 
 def schedule_file_cleanup(file_path, ttl_seconds=config.OUTPUT_FILE_TTL_SECONDS):
-    """Deletes `file_path` after `ttl_seconds`, unconditionally. Fires on a
-    background daemon thread so it doesn't block the response/event loop,
-    and never raises. Used for both output files and (since inputs are now
-    kept around for the Zoho attachment flow — see zoho.py) input files.
+    """Supprime `file_path` après `ttl_seconds`, sans condition. Se
+    déclenche sur un thread daemon en arrière-plan pour ne pas bloquer la
+    réponse/l'event loop, et ne lève jamais d'exception. Utilisé aussi
+    bien pour les fichiers de sortie que (puisque les fichiers d'entrée
+    sont maintenant conservés pour le flux de pièce jointe Zoho — voir
+    zoho.py) pour les fichiers d'entrée.
     """
 
     def _cleanup():
@@ -61,11 +65,12 @@ def schedule_file_cleanup(file_path, ttl_seconds=config.OUTPUT_FILE_TTL_SECONDS)
 
 
 def _sweep_directory(directory, ttl_seconds):
-    """Removes files in `directory` whose mtime is older than `ttl_seconds`.
-    Unlike schedule_file_cleanup, this doesn't rely on anything remembered
-    in process memory — it re-derives "should this be gone by now?" from
-    the file itself, so it still catches leftovers even if the timer that
-    was supposed to delete them never got the chance to run.
+    """Supprime les fichiers de `directory` dont le mtime est plus vieux que
+    `ttl_seconds`. Contrairement à schedule_file_cleanup, ceci ne repose
+    sur rien de mémorisé dans la mémoire du processus — ça redérive
+    "est-ce que ça devrait être parti maintenant ?" à partir du fichier
+    lui-même, donc ça rattrape quand même les restes même si le timer
+    censé les supprimer n'a jamais eu l'occasion de s'exécuter.
     """
     swept = 0
     now = time.time()
@@ -90,17 +95,19 @@ def _sweep_directory(directory, ttl_seconds):
 
 
 async def periodic_cleanup_sweep():
-    """Backstop for schedule_file_cleanup(): that function's threading.Timer
-    only lives as long as the process that scheduled it. Every container
-    restart or redeploy — routine in a containerized/multi-replica setup —
-    silently drops any pending timers, leaving their files orphaned forever
-    since nothing else was tracking them.
+    """Filet de sécurité pour schedule_file_cleanup() : le threading.Timer
+    de cette fonction ne vit que le temps du processus qui l'a programmé.
+    Chaque redémarrage de conteneur ou redéploiement — chose courante dans
+    une installation conteneurisée multi-réplicas — fait silencieusement
+    disparaître tous les timers en attente, laissant leurs fichiers
+    orphelins pour toujours puisque rien d'autre ne les suivait.
 
-    This runs once immediately (so files orphaned by a *previous* restart
-    get swept right away) and then on a fixed interval for as long as the
-    process lives, checking real file age (mtime) rather than trusting any
-    in-memory schedule. Call via asyncio.create_task(...) from startup and
-    cancel the task on shutdown — see app/main.py.
+    Ceci s'exécute une fois immédiatement (pour que les fichiers rendus
+    orphelins par un *précédent* redémarrage soient balayés tout de suite)
+    puis à intervalle fixe tant que le processus vit, en vérifiant l'âge
+    réel du fichier (mtime) plutôt que de faire confiance à une
+    planification en mémoire. À appeler via asyncio.create_task(...) au
+    démarrage, et à annuler à l'arrêt — voir app/main.py.
     """
     while True:
         for directory in (config.UPLOAD_DIR, config.OUTPUT_DIR):

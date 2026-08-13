@@ -1,7 +1,8 @@
-"""Blocking prep work shared by the NDJSON-over-HTTP and WebSocket deepfake
-routes: save+validate upload, check duration cap, reserve quota, build the
-exe command. Everything here is synchronous on purpose (Firestore is
-blocking) — call it via asyncio.to_thread.
+"""Travail de préparation bloquant partagé par les routes deepfake
+NDJSON-sur-HTTP et WebSocket : sauvegarde+validation de l'upload,
+vérification du plafond de durée, réservation de quota, construction de
+la commande de l'exe. Tout ici est synchrone à dessein (Firestore est
+bloquant) — à appeler via asyncio.to_thread.
 """
 import wave
 
@@ -16,16 +17,19 @@ from app.services.quota import QuotaExceededError, reserve_usage_file
 
 
 def prepare_deepfake_job(auth: AuthContext, raw_body: bytes, file_name: str) -> dict:
-    """Returns {"command", "firestore_client", "usage_ref", "minutes_needed",
-    "input_path"} on success, or raises HTTPException/ValueError on failure
-    (the input file has already been cleaned up in that case).
+    """Retourne {"command", "firestore_client", "usage_ref",
+    "minutes_needed", "input_path"} en cas de succès, ou lève
+    HTTPException/ValueError en cas d'échec (le fichier d'entrée a déjà
+    été nettoyé dans ce cas).
 
-    For an API-key caller (`auth.auth_method == "api_key"`), quota is
-    checked against that key's plan allowance for the current calendar
-    month instead of the website's flat lifetime usage/{uid} cap, and on
-    any failure below the uploaded input is deleted immediately rather
-    than left for the TTL sweep — see process_flow.run_feature_processing's
-    docstring for the fuller rationale (shared by both processing paths)."""
+    Pour un appelant par clé API (`auth.auth_method == "api_key"`), le
+    quota est vérifié par rapport à l'allocation de l'offre de cette clé
+    pour le mois calendaire en cours plutôt que par rapport au plafond à
+    vie fixe usage/{uid} du site, et en cas d'échec ci-dessous, l'entrée
+    uploadée est supprimée immédiatement plutôt que laissée pour le
+    balayage par TTL — voir la docstring de
+    process_flow.run_feature_processing pour la justification complète
+    (partagée par les deux chemins de traitement)."""
     uid = auth.uid
     is_api_key = auth.auth_method == "api_key"
 
@@ -94,9 +98,10 @@ def prepare_deepfake_job(auth: AuthContext, raw_body: bytes, file_name: str) -> 
 
 
 def finalize_deepfake_result(done_event: dict, job: dict, uid: str) -> dict:
-    """Turns the "__done__" event from run_deepfake_stream into the final
-    "result" or "error" event, including the quota commit/release — mirrors
-    the tail of NoiseFilterHandler._handle_deepfake_request."""
+    """Transforme l'événement "__done__" de run_deepfake_stream en
+    l'événement final "result" ou "error", y compris la
+    validation/libération du quota — reflète la fin de
+    NoiseFilterHandler._handle_deepfake_request."""
     from app.services.detector import parse_deepfake_percent
     from app.services.quota import commit_reserved_file, release_quota_safely
 
@@ -163,9 +168,10 @@ def finalize_deepfake_result(done_event: dict, job: dict, uid: str) -> dict:
     if is_api_key:
         audio.cleanup_file(input_path)
     else:
-        # Deepfake detection has no processed audio output of its own —
-        # record just the input so the unsatisfied-survey Zoho flow
-        # (webhooks.py) can attach it to the user's Contact.
+        # La détection de deepfake n'a pas de sortie audio traitée propre —
+        # enregistre juste l'entrée pour que le flux Zoho du sondage
+        # d'insatisfaction (webhooks.py) puisse l'attacher au Contact de
+        # l'utilisateur.
         from app.services.downloads import schedule_file_cleanup
         from app.services.zoho import save_processed_output_record
 
@@ -176,10 +182,10 @@ def finalize_deepfake_result(done_event: dict, job: dict, uid: str) -> dict:
             input_path=input_path,
             original_file_name=job.get("original_file_name"),
         )
-        # Same TTL used elsewhere for this purpose, so the input isn't
-        # retained indefinitely if the unsatisfied-survey Zoho flow never
-        # fires for this submission (see process_flow.py's identical
-        # comment).
+        # Même TTL utilisé ailleurs dans ce but, pour que l'entrée ne soit
+        # pas retenue indéfiniment si le flux Zoho du sondage
+        # d'insatisfaction ne se déclenche jamais pour cette soumission
+        # (voir le commentaire identique dans process_flow.py).
         schedule_file_cleanup(input_path)
 
     result_event = {

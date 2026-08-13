@@ -1,7 +1,7 @@
-"""One-time OAuth bootstrap route for Zoho CRM. Not part of normal runtime
-traffic — hit this once during setup (or again if the refresh token is
-ever revoked) to mint ZOHO_REFRESH_TOKEN, then it's unused until needed
-again."""
+"""Route d'amorçage OAuth ponctuelle pour Zoho CRM. Ne fait pas partie du
+trafic normal en fonctionnement — à appeler une fois pendant la mise en
+place (ou à nouveau si le refresh token est un jour révoqué) pour générer
+ZOHO_REFRESH_TOKEN, puis elle reste inutilisée jusqu'au prochain besoin."""
 import requests
 from fastapi import APIRouter, HTTPException, Request
 
@@ -42,8 +42,9 @@ async def zoho_oauth_callback(request: Request):
             detail="No refresh_token in response — re-run the authorization URL with prompt=consent",
         )
 
-    # Bootstrap-only: printed to the server console, never returned in the
-    # response body, so it doesn't end up in browser history or access logs.
+    # Amorçage uniquement : affiché sur la console serveur, jamais retourné
+    # dans le corps de la réponse, pour qu'il ne finisse pas dans
+    # l'historique du navigateur ni dans les logs d'accès.
     print("=== ZOHO REFRESH TOKEN (save to ZOHO_REFRESH_TOKEN and remove this route) ===")
     print(tokens["refresh_token"])
 

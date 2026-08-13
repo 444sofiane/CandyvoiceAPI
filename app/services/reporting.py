@@ -1,8 +1,9 @@
-"""Builds the admin usage/satisfaction report and sends it by email via
-SMTP2GO. Reads straight from the usageEvents/satisfactionEvents Firestore
-collections (the same source these get synced *from* into Zoho CRM), so the
-report is always at least as fresh as anything in Zoho Analytics and doesn't
-need separate Zoho Analytics API credentials.
+"""Construit le rapport admin d'usage/satisfaction et l'envoie par e-mail
+via SMTP2GO. Lit directement dans les collections Firestore
+usageEvents/satisfactionEvents (la même source depuis laquelle ces
+données sont synchronisées *vers* Zoho CRM), donc le rapport est toujours
+au moins aussi frais que tout ce qu'il y a dans Zoho Analytics et n'a pas
+besoin d'identifiants API Zoho Analytics séparés.
 """
 import io
 import smtplib
@@ -19,11 +20,13 @@ from openpyxl.utils import get_column_letter
 from app import config
 from app.services.firebase import get_firestore_client
 
-# Friendlier labels for the workbook than the raw internal feature keys.
-# "noizoff" is old test data logged before the naming-consistency fix
-# (auth-guard.js now sends "noiseFilter" to match config.FEATURE_KEY_*) —
-# kept as a distinct legacy label rather than merged into "NoizOff", so old
-# rows don't silently get counted alongside new ones under one name.
+# Libellés plus lisibles pour le classeur que les clés internes brutes des
+# fonctionnalités. "noizoff" est une ancienne donnée de test enregistrée
+# avant le correctif de cohérence de nommage (auth-guard.js envoie
+# maintenant "noiseFilter" pour correspondre à config.FEATURE_KEY_*) —
+# gardé comme libellé historique distinct plutôt que fusionné dans
+# "NoizOff", pour que les anciennes lignes ne soient pas silencieusement
+# comptées avec les nouvelles sous un même nom.
 FEATURE_DISPLAY_NAMES = {
     "noiseFilter": "NoizOff",
     "imitation": "Imitation vocale",
@@ -32,12 +35,13 @@ FEATURE_DISPLAY_NAMES = {
     "unknown": "Non spécifié",
 }
 
-# Old/alternate spellings that should be counted as the same feature during
-# aggregation. "noizoff" was what the survey link sent before it was
-# aligned to match Usage_Events' "noiseFilter" — same feature, just logged
-# under a different string for a while. Applied at read time in
-# build_report(), so it merges cleanly into one "NoizOff" row without
-# touching the underlying Zoho/Firestore records.
+# Anciennes/autres orthographes qui doivent être comptées comme la même
+# fonctionnalité pendant l'agrégation. "noizoff" est ce qu'envoyait le lien
+# du sondage avant d'être aligné pour correspondre au "noiseFilter" de
+# Usage_Events — même fonctionnalité, juste enregistrée sous une chaîne
+# différente pendant un temps. Appliqué à la lecture dans build_report(),
+# donc ça fusionne proprement en une seule ligne "NoizOff" sans toucher
+# aux enregistrements Zoho/Firestore sous-jacents.
 FEATURE_ALIASES = {
     "noizoff": "noiseFilter",
 }
@@ -58,27 +62,28 @@ RANGE_LABELS = {
     "6months": "6 derniers mois",
 }
 
-# Longer ranges are bucketed by month instead of by day, so a 6-month email
-# stays a handful of rows instead of ~180 — day/week ranges are short enough
-# that a per-day breakdown is still readable.
+# Les périodes plus longues sont regroupées par mois plutôt que par jour,
+# pour qu'un e-mail sur 6 mois reste une poignée de lignes plutôt que
+# ~180 — les périodes jour/semaine sont assez courtes pour qu'une
+# répartition par jour reste lisible.
 _MONTH_BUCKETED_RANGES = {"3months", "6months"}
 
 _RANGE_TO_DAYS = {
     "day": 1,
     "week": 7,
-    # Calendar months vary in length; a fixed day-count is an approximation
-    # good enough for a reporting window (not used for anything billing- or
-    # legally-sensitive). Avoids pulling in a dateutil dependency just for
-    # this.
+    # Les mois calendaires ont une longueur variable ; un nombre de jours
+    # fixe est une approximation suffisante pour une fenêtre de rapport
+    # (pas utilisé pour quoi que ce soit de sensible côté facturation ou
+    # légal). Évite d'ajouter une dépendance dateutil juste pour ça.
     "3months": 91,
     "6months": 182,
 }
 
 
 def resolve_date_range(range_key, reference_date=None):
-    """Returns (start, end) as UTC datetimes, end being the end of
-    reference_date (defaults to today) and start being `range_key` back from
-    there, inclusive."""
+    """Retourne (start, end) comme datetimes UTC, end étant la fin de
+    reference_date (par défaut aujourd'hui) et start étant `range_key` en
+    arrière depuis là, inclus."""
     if range_key not in _RANGE_TO_DAYS:
         raise ValueError(f"Unknown range: {range_key!r}. Expected one of {sorted(_RANGE_TO_DAYS)}.")
 
@@ -107,26 +112,27 @@ def _fetch_events(collection_name, start, end):
     for snap in query.stream():
         data = snap.to_dict() or {}
         created_at = data.get("createdAt")
-        # Firestore timestamps come back as datetime objects already.
+        # Les timestamps Firestore reviennent déjà comme des objets datetime.
         if created_at is not None:
             docs.append(data)
     return docs
 
 
 def build_report(range_key, reference_date=None):
-    """Returns a dict with everything render_report_html needs: the
-    resolved date window, a bucketed usage table (unique users + event count
-    per bucket per feature), a bucketed satisfaction table (average score +
-    response count per bucket per feature), and whole-period totals per
-    feature for a quick top-line summary."""
+    """Retourne un dict avec tout ce dont render_report_html a besoin : la
+    fenêtre de dates résolue, une table d'usage regroupée (utilisateurs
+    uniques + nombre d'événements par bucket par fonctionnalité), une
+    table de satisfaction regroupée (score moyen + nombre de réponses par
+    bucket par fonctionnalité), et les totaux sur toute la période par
+    fonctionnalité pour un résumé rapide en tête."""
     start, end = resolve_date_range(range_key, reference_date)
 
     usage_events = _fetch_events("usageEvents", start, end)
     satisfaction_events = _fetch_events("satisfactionEvents", start, end)
 
-    # bucket -> feature -> set(uid)   (unique users, deduped per bucket)
+    # bucket -> feature -> set(uid)   (utilisateurs uniques, dédupliqués par bucket)
     usage_buckets = {}
-    # feature -> set(uid) across the whole period, for the top-line summary
+    # feature -> set(uid) sur toute la période, pour le résumé en tête
     usage_totals = {}
 
     for event in usage_events:
@@ -141,7 +147,7 @@ def build_report(range_key, reference_date=None):
 
     # bucket -> feature -> list[score]
     satisfaction_buckets = {}
-    # feature -> list[score] across the whole period
+    # feature -> list[score] sur toute la période
     satisfaction_totals = {}
 
     for event in satisfaction_events:
@@ -224,7 +230,7 @@ def _write_summary_sheet(ws, report):
         ws.cell(row=header_row + 1, column=1, value="Aucune activité sur cette période.")
         return
 
-    # Unique users by feature
+    # Utilisateurs uniques par fonctionnalité
     users_chart = BarChart()
     users_chart.title = "Utilisateurs uniques par fonctionnalité"
     users_chart.y_axis.title = "Utilisateurs uniques"
@@ -235,7 +241,7 @@ def _write_summary_sheet(ws, report):
     users_chart.width, users_chart.height = 14, 8
     ws.add_chart(users_chart, f"F{header_row}")
 
-    # Average satisfaction by feature
+    # Satisfaction moyenne par fonctionnalité
     satisfaction_chart = BarChart()
     satisfaction_chart.title = "Satisfaction moyenne par fonctionnalité (0-10)"
     satisfaction_chart.y_axis.title = "Score moyen"
@@ -305,13 +311,14 @@ def _write_pivot_sheet(ws, periods, features, rows, value_label, chart_cls, buck
 
 
 def build_report_workbook(report):
-    """Builds the .xlsx attachment: a Summary sheet (per-feature totals +
-    two bar charts) and two detail sheets pivoted period-by-feature (usage,
-    satisfaction), each with its own trend chart. Using a real workbook
-    instead of CSV sidesteps two problems at once: comma-delimited CSVs
-    open garbled in Excel under locales that expect ";" as the list
-    separator (e.g. French), and a CSV can't hold charts at all — it's
-    plain text.
+    """Construit la pièce jointe .xlsx : une feuille Résumé (totaux par
+    fonctionnalité + deux graphiques en barres) et deux feuilles de détail
+    pivotées période-par-fonctionnalité (usage, satisfaction), chacune
+    avec son propre graphique de tendance. Utiliser un vrai classeur
+    plutôt qu'un CSV évite deux problèmes à la fois : les CSV délimités
+    par virgule s'ouvrent tout brouillés dans Excel sous les locales qui
+    attendent ";" comme séparateur de liste (ex. le français), et un CSV
+    ne peut pas du tout contenir de graphiques — c'est du texte brut.
     """
     wb = Workbook()
 

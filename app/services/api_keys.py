@@ -1,8 +1,9 @@
-"""API-key issuance/verification, for server-to-server callers who bring
-their own application instead of going through the Firebase-authenticated
-web UI. A key's raw value is only ever shown once, at creation time — only
-its SHA-256 hash is persisted (as the Firestore document id, for an O(1)
-lookup on every request), mirroring how a password would be stored.
+"""Émission/vérification des clés API, pour les appelants serveur-à-serveur
+qui apportent leur propre application au lieu de passer par l'UI web
+authentifiée en Firebase. La valeur brute d'une clé n'est montrée qu'une
+seule fois, à la création — seul son hash SHA-256 est persisté (comme id
+de document Firestore, pour une recherche en O(1) à chaque requête), à
+l'image de la façon dont un mot de passe serait stocké.
 """
 import hashlib
 import secrets
@@ -16,7 +17,7 @@ from app import config
 from app.services.firebase import get_firestore_client
 
 _COLLECTION = "apiKeys"
-_GET_USERS_MAX_BATCH = 100  # firebase_admin.auth.get_users' documented per-call cap
+_GET_USERS_MAX_BATCH = 100  # plafond documenté par appel de firebase_admin.auth.get_users
 
 
 @dataclass
@@ -31,12 +32,12 @@ def _hash_key(raw_key: str) -> str:
 
 
 def create_api_key(uid: str, label: str | None = None, plan: str = config.DEFAULT_API_KEY_PLAN) -> tuple[str, str]:
-    """Generates a new key for `uid` on `plan`, stores its hash, and
-    returns (raw_key, key_id). `raw_key` is never persisted — capture it
-    now, it cannot be recovered later.
+    """Génère une nouvelle clé pour `uid` sur `plan`, stocke son hash, et
+    retourne (raw_key, key_id). `raw_key` n'est jamais persistée —
+    capture-la maintenant, elle ne pourra pas être récupérée plus tard.
 
-    Raises ValueError if `plan` isn't a known tier — callers should turn
-    that into a 400, not let it become an opaque 500."""
+    Lève ValueError si `plan` n'est pas un palier connu — les appelants
+    doivent transformer ça en 400, pas laisser ça devenir un 500 opaque."""
     if plan not in config.API_KEY_PLANS:
         raise ValueError(f"Unknown plan {plan!r} — expected one of {sorted(config.API_KEY_PLANS)}")
 
@@ -57,10 +58,10 @@ def create_api_key(uid: str, label: str | None = None, plan: str = config.DEFAUL
 
 
 def resolve_api_key(raw_key: str) -> ApiKeyRecord | None:
-    """Returns the ApiKeyRecord for a valid, non-revoked key, or None.
-    Raises FirestoreUnavailableError if Firestore itself isn't reachable —
-    that's a server config problem, not "invalid key", so the caller should
-    surface it as a 503 rather than a 401."""
+    """Retourne l'ApiKeyRecord pour une clé valide et non révoquée, ou
+    None. Lève FirestoreUnavailableError si Firestore lui-même n'est pas
+    joignable — c'est un problème de config serveur, pas une "clé
+    invalide", donc l'appelant doit remonter ça en 503 plutôt qu'en 401."""
     if not raw_key:
         return None
 
@@ -79,7 +80,7 @@ def resolve_api_key(raw_key: str) -> ApiKeyRecord | None:
 
     try:
         doc.reference.update({"lastUsedAt": admin_firestore.SERVER_TIMESTAMP})
-    except Exception as exc:  # noqa: BLE001 - best-effort bookkeeping only
+    except Exception as exc:  # noqa: BLE001 - suivi au mieux, sans garantie
         print(f"Could not update lastUsedAt for api key {doc.id}: {exc}")
 
     plan = data.get("plan") or config.DEFAULT_API_KEY_PLAN
@@ -87,8 +88,9 @@ def resolve_api_key(raw_key: str) -> ApiKeyRecord | None:
 
 
 def list_api_keys_for_uid(uid: str) -> list[dict]:
-    """Returns metadata (never the raw key, which was never stored) for
-    every key issued to `uid`, for display on an account/keys page."""
+    """Retourne les métadonnées (jamais la clé brute, qui n'a jamais été
+    stockée) de chaque clé émise pour `uid`, pour affichage sur une page
+    compte/clés."""
     client = get_firestore_client()
     query = client.collection(_COLLECTION).where(filter=FieldFilter("uid", "==", uid))
     keys = []
@@ -106,12 +108,13 @@ def list_api_keys_for_uid(uid: str) -> list[dict]:
 
 
 def resolve_emails(uids: list[str]) -> dict[str, str | None]:
-    """Batch-resolves Firebase Auth emails for `uids` — chunked at
-    get_users()'s documented 100-identifier-per-call cap, so this stays a
-    handful of round-trips even for a full page, not one lookup per uid.
-    A uid Firebase Auth doesn't recognize (e.g. a deleted account) or a
-    Firestore/Auth hiccup just means that uid is absent from the returned
-    dict — callers should use .get(uid), not [uid]."""
+    """Résout par lot les e-mails Firebase Auth pour `uids` — découpé au
+    plafond documenté de 100 identifiants par appel de get_users(), donc
+    ça reste une poignée d'allers-retours même pour une page complète, pas
+    une recherche par uid. Un uid que Firebase Auth ne reconnaît pas (ex.
+    un compte supprimé) ou un pépin Firestore/Auth signifie simplement que
+    cet uid est absent du dict retourné — les appelants doivent utiliser
+    .get(uid), pas [uid]."""
     unique_uids = list(dict.fromkeys(u for u in uids if u))
     emails: dict[str, str | None] = {}
 
@@ -120,7 +123,7 @@ def resolve_emails(uids: list[str]) -> dict[str, str | None]:
         identifiers = [firebase_auth.UidIdentifier(uid) for uid in chunk]
         try:
             result = firebase_auth.get_users(identifiers)
-        except Exception as exc:  # noqa: BLE001 - email is a nice-to-have, never worth failing the list for
+        except Exception as exc:  # noqa: BLE001 - l'e-mail est un plus, jamais une raison de faire échouer la liste
             print(f"Batch email resolution failed for {len(chunk)} uid(s): {exc}")
             continue
         for user in result.users:
@@ -130,14 +133,15 @@ def resolve_emails(uids: list[str]) -> dict[str, str | None]:
 
 
 def list_all_api_keys(limit: int = 50, cursor: str | None = None) -> tuple[list[dict], str | None]:
-    """Returns (keys, next_cursor): up to `limit` keys across *all* users,
-    newest first, each annotated with its owner's email (via a batched
-    Firebase Auth lookup — see resolve_emails) — for an admin "every key"
-    dashboard, as opposed to list_api_keys_for_uid's self-service,
-    single-user view.
+    """Retourne (keys, next_cursor) : jusqu'à `limit` clés de *tous* les
+    utilisateurs, les plus récentes d'abord, chacune annotée avec l'e-mail
+    de son propriétaire (via une recherche Firebase Auth par lot — voir
+    resolve_emails) — pour un tableau de bord admin "toutes les clés", par
+    opposition à la vue self-service mono-utilisateur de
+    list_api_keys_for_uid.
 
-    Pass the returned `next_cursor` back as `cursor` to fetch the next
-    page; `next_cursor` is None once there are no more pages."""
+    Renvoie le `next_cursor` retourné en `cursor` pour récupérer la page
+    suivante ; `next_cursor` vaut None une fois qu'il n'y a plus de page."""
     client = get_firestore_client()
     query = (
         client.collection(_COLLECTION)
@@ -172,10 +176,11 @@ def list_all_api_keys(limit: int = 50, cursor: str | None = None) -> tuple[list[
 
 
 def list_all_key_records() -> list[dict]:
-    """Every key's (key_id, uid, plan, revoked) — no pagination, no email
-    resolution. For internal batch jobs (e.g. the monthly API usage
-    report — see api_usage_report.py) that need to walk every key, as
-    opposed to list_all_api_keys's paginated admin-dashboard page."""
+    """(key_id, uid, plan, revoked) de chaque clé — sans pagination, sans
+    résolution d'e-mail. Pour les tâches par lot internes (ex. le rapport
+    mensuel d'usage API — voir api_usage_report.py) qui ont besoin de
+    parcourir toutes les clés, par opposition à la page paginée du
+    tableau de bord admin de list_all_api_keys."""
     client = get_firestore_client()
     return [
         {
@@ -189,9 +194,10 @@ def list_all_key_records() -> list[dict]:
 
 
 def get_api_key_for_owner(key_id: str, owner_uid: str) -> dict | None:
-    """Fetches one key's metadata, scoped to its owner — returns None if
-    the key doesn't exist or belongs to someone else (never distinguishes
-    the two, same reasoning as revoke_api_key's owner_uid check)."""
+    """Récupère les métadonnées d'une clé, restreint à son propriétaire —
+    retourne None si la clé n'existe pas ou appartient à quelqu'un d'autre
+    (ne fait jamais la distinction entre les deux, même raisonnement que
+    la vérification owner_uid de revoke_api_key)."""
     client = get_firestore_client()
     doc = client.collection(_COLLECTION).document(key_id).get()
     if not doc.exists:
@@ -208,15 +214,17 @@ def get_api_key_for_owner(key_id: str, owner_uid: str) -> dict | None:
 
 
 def revoke_api_key(key_id: str, owner_uid: str | None = None) -> bool:
-    """Marks a key revoked by its key_id (the hash returned from
-    create_api_key/list_api_keys_for_uid). Returns False if no such key
-    exists.
+    """Marque une clé comme révoquée via son key_id (le hash retourné par
+    create_api_key/list_api_keys_for_uid). Retourne False si aucune telle
+    clé n'existe.
 
-    `owner_uid`, when given, scopes this to self-service revocation: the
-    key must belong to that uid or this returns False (not found) rather
-    than revoking it — deliberately indistinguishable from "no such key" so
-    a user can't use this to probe which key_ids exist for other
-    accounts. Admin callers pass owner_uid=None to revoke any key."""
+    `owner_uid`, quand il est fourni, restreint ceci à la révocation en
+    self-service : la clé doit appartenir à cet uid, sinon ça retourne
+    False (introuvable) plutôt que de la révoquer — délibérément
+    indiscernable de "cette clé n'existe pas" pour qu'un utilisateur ne
+    puisse pas s'en servir pour sonder quels key_id existent chez d'autres
+    comptes. Les appelants admin passent owner_uid=None pour révoquer
+    n'importe quelle clé."""
     client = get_firestore_client()
     ref = client.collection(_COLLECTION).document(key_id)
     snapshot = ref.get()
@@ -229,9 +237,10 @@ def revoke_api_key(key_id: str, owner_uid: str | None = None) -> bool:
 
 
 def set_api_key_plan(key_id: str, plan: str) -> bool:
-    """Admin-only: changes a key's plan (e.g. after a manual Enterprise
-    negotiation, or a support-handled upgrade/downgrade). Returns False if
-    no such key exists. Raises ValueError for an unknown plan."""
+    """Réservé aux admins : change l'offre d'une clé (ex. après une
+    négociation Enterprise manuelle, ou un changement d'offre géré par le
+    support). Retourne False si aucune telle clé n'existe. Lève ValueError
+    pour une offre inconnue."""
     if plan not in config.API_KEY_PLANS:
         raise ValueError(f"Unknown plan {plan!r} — expected one of {sorted(config.API_KEY_PLANS)}")
 

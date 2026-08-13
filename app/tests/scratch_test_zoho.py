@@ -1,4 +1,4 @@
-# scratch_test_zoho.py — delete after use
+# scratch_test_zoho.py — à supprimer après usage
 from app.services import zoho
 from app import config
 

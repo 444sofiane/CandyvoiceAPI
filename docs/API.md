@@ -1,42 +1,46 @@
-# CandyVoice API — Developer Reference
+# CandyVoice API — Référence développeur
 
-Audio processing for voice products: background-noise removal, voice cloning,
-dropped-frame recovery, and AI voice-deepfake detection. Plain REST for the
-first three, plus a streaming HTTP endpoint and a WebSocket for detection
-progress.
+Traitement audio pour produits vocaux : suppression de bruit de fond,
+clonage de voix, récupération de trames perdues, et détection de
+deepfake vocal par IA. REST classique pour les trois premiers, plus un
+endpoint HTTP en streaming et un WebSocket pour la progression de la
+détection.
 
-- **Base URL:** `https://api.candyvoice.com`
-- **Auth:** Firebase ID token, or an API key for server-to-server use — see [API_KEYS.md](API_KEYS.md)
-- **Format:** raw audio bytes in, JSON out
+- **URL de base :** `https://api.candyvoice.com`
+- **Auth :** token d'ID Firebase, ou une clé API pour un usage serveur-à-serveur — voir [API_KEYS.md](API_KEYS.md)
+- **Format :** octets audio bruts en entrée, JSON en sortie
 
-## Overview
+## Vue d'ensemble
 
-Every processing endpoint takes one audio file and returns one result —
-there's no job queue or polling. Deepfake detection additionally offers a
-streaming variant (chunked NDJSON or a WebSocket) so a UI can show live
-progress on longer clips.
+Chaque endpoint de traitement prend un fichier audio et retourne un
+résultat — pas de file d'attente ni de polling. La détection de deepfake
+propose en plus une variante en streaming (NDJSON chunké ou un WebSocket)
+pour qu'une UI puisse afficher la progression en direct sur les clips
+plus longs.
 
-| Feature | Endpoint | Use it for |
+| Fonctionnalité | Endpoint | À utiliser pour |
 |---|---|---|
-| Noise filter | `POST /api/noise-filter` | Strip background noise from a recording |
-| Voice imitation | `POST /api/imitation` | Re-voice a clip as one of 18 preset voices |
-| Frame recovery | `POST /api/frame-recovery` | Reconstruct dropped or corrupted audio frames |
-| Deepfake detection | `POST /api/deepfake-detect` or `wss:///ws/deepfake` | Score how likely a clip is synthetic speech |
+| Filtre de bruit | `POST /api/noise-filter` | Retirer le bruit de fond d'un enregistrement |
+| Imitation vocale | `POST /api/imitation` | Revoicer un clip avec l'une des 18 voix préréglées |
+| Récupération de trames | `POST /api/frame-recovery` | Reconstruire des trames audio perdues ou corrompues |
+| Détection de deepfake | `POST /api/deepfake-detect` ou `wss:///ws/deepfake` | Évaluer la probabilité qu'un clip soit une voix synthétique |
 
-## Authentication
+## Authentification
 
-Every call is tied to a signed-in CandyVoice user, one of two ways:
+Chaque appel est rattaché à un utilisateur CandyVoice connecté, de deux
+façons possibles :
 
-- **Firebase ID token** (the web UI's normal auth) — authenticate with
-  Firebase Authentication in the CandyVoice project, then send that user's
-  ID token as a bearer token. Usage, quota, and rate limiting are tracked
-  per user ID (`uid`).
-- **API key** — for calling from your own backend/app instead of a browser
-  session. Behaves differently in a few ways (quota/rate-limit follow a
-  chosen plan instead of the flat limits below, no files are retained
-  server-side, processed audio comes back as raw bytes instead of a
-  download URL) — see [API_KEYS.md](API_KEYS.md) for how to get one and
-  what changes.
+- **Token d'ID Firebase** (l'auth normale de l'UI web) — authentifie-toi
+  avec Firebase Authentication dans le projet CandyVoice, puis envoie le
+  token d'ID de cet utilisateur comme bearer token. Usage, quota et
+  limitation de débit sont suivis par ID utilisateur (`uid`).
+- **Clé API** — pour appeler depuis ton propre backend/app plutôt que
+  depuis une session navigateur. Se comporte différemment sur plusieurs
+  points (quota/limite de débit suivent une offre choisie plutôt que les
+  limites fixes ci-dessous, aucun fichier n'est retenu côté serveur,
+  l'audio traité revient en octets bruts plutôt qu'en URL de
+  téléchargement) — voir [API_KEYS.md](API_KEYS.md) pour savoir comment en
+  obtenir une et ce qui change.
 
 ```http
 Authorization: Bearer <firebase_id_token>
@@ -45,44 +49,48 @@ Authorization: Bearer <firebase_id_token>
 X-API-Key: cvk_...
 ```
 
-> The WebSocket endpoint can't carry a browser `Authorization` header on its
-> handshake, so it takes the same token as the first message on the
-> connection instead — see [Deepfake detection (live)](#wss-wsdeepfake).
+> L'endpoint WebSocket ne peut pas porter d'en-tête `Authorization`
+> navigateur sur son handshake, donc il prend le même token comme premier
+> message sur la connexion à la place — voir [Détection de deepfake (en direct)](#wss-wsdeepfake).
 
-> CORS is locked to CandyVoice's own web origins, so browser JavaScript on a
-> third-party site can't call this API directly. Calling from a backend,
-> script, or mobile app is unaffected — CORS is a browser-only restriction.
+> Le CORS est restreint aux origines web propres de CandyVoice, donc le
+> JavaScript d'un site tiers ne peut pas appeler cette API directement.
+> Appeler depuis un backend, un script, ou une app mobile n'est pas
+> affecté — le CORS est une restriction propre aux navigateurs.
 
-## Making a request
+## Faire une requête
 
-Every processing endpoint takes the file as a **raw binary body** — not
-`multipart/form-data` — plus the original filename in a header.
+Chaque endpoint de traitement prend le fichier comme **corps binaire
+brut** — pas en `multipart/form-data` — plus le nom de fichier original
+dans un en-tête.
 
-| Header | Required | Notes |
+| En-tête | Requis | Notes |
 |---|---|---|
-| `Authorization` | required | `Bearer <firebase_id_token>` |
-| `X-File-Name` | required | Original filename. Can also be sent as a `?file_name=` query param. |
+| `Authorization` | requis | `Bearer <firebase_id_token>` |
+| `X-File-Name` | requis | Nom de fichier original. Peut aussi être envoyé en paramètre de requête `?file_name=`. |
 
-> **Send WAV.** The upload is accepted if it merely looks like audio by
-> content, but clip duration is read from a WAV header — a non-WAV file can
-> pass the initial check and still fail a moment later with `400 Could not
-> determine audio duration`. Transcode to WAV before uploading.
+> **Envoie du WAV.** L'upload est accepté s'il ressemble simplement à de
+> l'audio par son contenu, mais la durée du clip est lue depuis un en-tête
+> WAV — un fichier non-WAV peut passer la vérification initiale et quand
+> même échouer un instant plus tard avec `400 Could not determine audio
+> duration`. Transcode en WAV avant d'uploader.
 >
-> Clips must be **30 seconds or shorter**. Longer files are rejected with a
-> 400 before any processing starts.
+> Les clips doivent faire **30 secondes ou moins**. Les fichiers plus
+> longs sont rejetés avec un 400 avant que tout traitement ne commence.
 
 ```bash
-# noise filter, as a worked example — same shape for every processing endpoint
+# filtre de bruit, comme exemple travaillé — même forme pour chaque endpoint de traitement
 curl -X POST https://api.candyvoice.com/api/noise-filter \
   -H "Authorization: Bearer $FIREBASE_ID_TOKEN" \
   -H "X-File-Name: meeting.wav" \
   --data-binary @meeting.wav
 ```
 
-## Response shape
+## Forme de la réponse
 
-The three synchronous endpoints (noise filter, imitation, frame recovery)
-all return the same envelope, plus a couple of endpoint-specific fields.
+Les trois endpoints synchrones (filtre de bruit, imitation, récupération
+de trames) retournent tous la même enveloppe, plus quelques champs
+propres à chaque endpoint.
 
 ```json
 {
@@ -96,45 +104,47 @@ all return the same envelope, plus a couple of endpoint-specific fields.
   "max_files": 10,
   "stdout": "...",
   "stderr": "",
-  "command": ["…diagnostic only…"]
+  "command": ["…diagnostic uniquement…"]
 }
 ```
 
-| Field | Meaning |
+| Champ | Signification |
 |---|---|
-| `output_url` | Relative path to [download the result](#get-outputsoutput_name). Carries its own short-lived token — use it as-is. |
-| `output_file` | The file's path on the server. Informational only; not reachable directly. |
-| `files_used` / `max_files` | This feature's quota counter — see [Quotas](#errors-quotas--rate-limits). |
-| `stdout` / `stderr` / `command` | Raw diagnostics from the processing engine. Useful when filing a support request; not a stable contract to parse. |
+| `output_url` | Chemin relatif pour [télécharger le résultat](#get-outputsoutput_name). Porte son propre token à courte durée de vie — à utiliser tel quel. |
+| `output_file` | Le chemin du fichier sur le serveur. Informatif uniquement ; pas accessible directement. |
+| `files_used` / `max_files` | Le compteur de quota de cette fonctionnalité — voir [Quotas](#erreurs-quotas-et-limites-de-débit). |
+| `stdout` / `stderr` / `command` | Diagnostics bruts du moteur de traitement. Utile pour une demande de support ; pas un contrat stable à parser. |
 
-> Output files are deleted automatically about an hour after creation.
-> Download or forward `output_url` promptly rather than storing it for later.
+> Les fichiers de sortie sont supprimés automatiquement environ une heure
+> après leur création. Télécharge ou transmets `output_url` rapidement
+> plutôt que de le stocker pour plus tard.
 
-## Errors, quotas & rate limits
+## Erreurs, quotas et limites de débit
 
-Errors are JSON: `{"error": "..."}` for straightforward failures, or a
-richer object with `stdout`/`stderr` when the processing engine itself
-failed.
+Les erreurs sont en JSON : `{"error": "..."}` pour les échecs simples, ou
+un objet plus riche avec `stdout`/`stderr` quand le moteur de traitement
+lui-même a échoué.
 
-| Status | Meaning |
+| Statut | Signification |
 |---|---|
-| 400 | Bad request — missing filename, unparseable/oversized audio, invalid parameter value. |
-| 401 | Missing, invalid, or expired Firebase token. |
-| 429 | Rate limit or per-feature quota exceeded (the message says which). |
-| 500 | The processing engine failed, or an unexpected server error. |
-| 503 | Quota service temporarily unavailable — safe to retry. |
-| 504 | Processing exceeded the 10-minute server-side timeout. |
+| 400 | Requête invalide — nom de fichier manquant, audio non parsable/trop volumineux, valeur de paramètre invalide. |
+| 401 | Token Firebase manquant, invalide, ou expiré. |
+| 429 | Limite de débit ou quota par fonctionnalité dépassé (le message précise lequel). |
+| 500 | Le moteur de traitement a échoué, ou erreur serveur inattendue. |
+| 503 | Service de quota temporairement indisponible — sûr à réessayer. |
+| 504 | Le traitement a dépassé le timeout serveur de 10 minutes. |
 
-**Rate limit** — up to 5 requests per 60 seconds, per authenticated user,
-across all endpoints:
+**Limite de débit** — jusqu'à 5 requêtes par 60 secondes, par utilisateur
+authentifié, tous endpoints confondus :
 
 ```json
 { "error": "Too many requests — max 5 per 60s. Try again shortly." }
 ```
 
-**Per-feature quota** — each feature carries its own allowance of 10
-processed files, tracked independently. Using up noise filter doesn't touch
-your imitation or deepfake allowance:
+**Quota par fonctionnalité** — chaque fonctionnalité porte sa propre
+allocation de 10 fichiers traités, suivie indépendamment. Épuiser le
+filtre de bruit ne touche pas à ton allocation d'imitation ou de
+deepfake :
 
 ```json
 { "error": "You've used all 10 files allowed for this feature." }
@@ -146,8 +156,8 @@ your imitation or deepfake allowance:
 
 ### `GET /health`
 
-Unauthenticated liveness check — safe for uptime monitors and
-load-balancer health probes.
+Vérification de disponibilité non authentifiée — sûre pour les moniteurs
+de disponibilité et les sondes de santé de load-balancer.
 
 ```bash
 curl https://api.candyvoice.com/health
@@ -159,16 +169,16 @@ curl https://api.candyvoice.com/health
 
 ### `POST /api/noise-filter`
 
-Aliases: `/process`, `/api/process`
+Alias : `/process`, `/api/process`
 
-Removes background noise from a spoken-audio clip.
+Retire le bruit de fond d'un clip de parole.
 
-| Header | | Notes |
+| En-tête | | Notes |
 |---|---|---|
-| `Authorization` | required | Bearer token |
-| `X-File-Name` | required | Or `?file_name=` |
-| `X-Output-Name` | optional | Or `?output_file=`. Defaults to `<input>_filtered.wav`. |
-| `X-Confidential-Check` | optional | `true` skips saving a copy to your processed-outputs history. |
+| `Authorization` | requis | Bearer token |
+| `X-File-Name` | requis | Ou `?file_name=` |
+| `X-Output-Name` | optionnel | Ou `?output_file=`. Par défaut `<entrée>_filtered.wav`. |
+| `X-Confidential-Check` | optionnel | `true` évite de sauvegarder une copie dans ton historique de sorties traitées. |
 
 ```bash
 curl -X POST https://api.candyvoice.com/api/noise-filter \
@@ -177,23 +187,24 @@ curl -X POST https://api.candyvoice.com/api/noise-filter \
   --data-binary @meeting.wav
 ```
 
-Response: the [standard envelope](#response-shape), no extra fields.
+Réponse : [l'enveloppe standard](#forme-de-la-réponse), sans champ supplémentaire.
 
 ### `POST /api/imitation`
 
-Alias: `/api/voice-imitation`
+Alias : `/api/voice-imitation`
 
-Re-voices the input speech as one of eighteen preset voice models.
+Revoice la parole d'entrée avec l'un des dix-huit modèles de voix
+préréglés.
 
-| Header | | Notes |
+| En-tête | | Notes |
 |---|---|---|
-| `Authorization` | required | Bearer token |
-| `X-File-Name` | required | Or `?file_name=` |
-| `X-Voice-Model` | required | One of the model IDs below. |
-| `X-Output-Name` | optional | Or `?output_file=` |
-| `X-Confidential-Check` | optional | `true` skips saving to your outputs history. |
+| `Authorization` | requis | Bearer token |
+| `X-File-Name` | requis | Ou `?file_name=` |
+| `X-Voice-Model` | requis | Un des ID de modèle ci-dessous. |
+| `X-Output-Name` | optionnel | Ou `?output_file=` |
+| `X-Confidential-Check` | optionnel | `true` évite la sauvegarde dans ton historique de sorties. |
 
-**Voice models:** `model_barack` `model_chloe` `model_cortana` `model_degaulle`
+**Modèles de voix :** `model_barack` `model_chloe` `model_cortana` `model_degaulle`
 `model_dombasle` `model_etienne` `model_frederic` `model_isabelle`
 `model_jeanne` `model_JLS` `model_marine` `model_mbappe` `model_michelleo`
 `model_mitterrand` `model_pierre` `model_tatiana` `model_trump` `model_valentin`
@@ -206,21 +217,21 @@ curl -X POST https://api.candyvoice.com/api/imitation \
   --data-binary @line.wav
 ```
 
-Response: the [standard envelope](#response-shape) plus `"voice_model": "model_trump"`.
+Réponse : [l'enveloppe standard](#forme-de-la-réponse) plus `"voice_model": "model_trump"`.
 
 ### `POST /api/frame-recovery`
 
-Alias: `/api/frameRecovery`
+Alias : `/api/frameRecovery`
 
-Reconstructs dropped or corrupted frames in a clip.
+Reconstruit les trames perdues ou corrompues d'un clip.
 
-| Header | | Notes |
+| En-tête | | Notes |
 |---|---|---|
-| `Authorization` | required | Bearer token |
-| `X-File-Name` | required | Or `?file_name=` |
-| `X-Frame-Recovery-Factor` | required | Number, `0 < factor ≤ 0.5` |
-| `X-Output-Name` | optional | Or `?output_file=` |
-| `X-Confidential-Check` | optional | `true` skips saving to your outputs history. |
+| `Authorization` | requis | Bearer token |
+| `X-File-Name` | requis | Ou `?file_name=` |
+| `X-Frame-Recovery-Factor` | requis | Nombre, `0 < facteur ≤ 0.5` |
+| `X-Output-Name` | optionnel | Ou `?output_file=` |
+| `X-Confidential-Check` | optionnel | `true` évite la sauvegarde dans ton historique de sorties. |
 
 ```bash
 curl -X POST https://api.candyvoice.com/api/frame-recovery \
@@ -230,20 +241,21 @@ curl -X POST https://api.candyvoice.com/api/frame-recovery \
   --data-binary @dropout.wav
 ```
 
-Response: the [standard envelope](#response-shape) plus `"frame_recovery_factor": 0.3`.
+Réponse : [l'enveloppe standard](#forme-de-la-réponse) plus `"frame_recovery_factor": 0.3`.
 
 ### `POST /api/deepfake-detect`
 
-Aliases: `/api/deepfake`, `/api/deepfake-detection`
+Alias : `/api/deepfake`, `/api/deepfake-detection`
 
-Scores how likely a clip is synthetic ("deepfake") speech. Unlike the
-endpoints above, this streams progress as newline-delimited JSON
-(`application/x-ndjson`) instead of returning one JSON object.
+Évalue la probabilité qu'un clip soit de la parole synthétique
+("deepfake"). Contrairement aux endpoints ci-dessus, celui-ci envoie la
+progression en streaming au format JSON délimité par sauts de ligne
+(`application/x-ndjson`) plutôt que de retourner un seul objet JSON.
 
-| Header | | Notes |
+| En-tête | | Notes |
 |---|---|---|
-| `Authorization` | required | Bearer token |
-| `X-File-Name` | required | Or `?file_name=` |
+| `Authorization` | requis | Bearer token |
+| `X-File-Name` | requis | Ou `?file_name=` |
 
 ```bash
 curl -N -X POST https://api.candyvoice.com/api/deepfake-detect \
@@ -255,34 +267,35 @@ curl -N -X POST https://api.candyvoice.com/api/deepfake-detect \
 ```jsonl
 {"type": "info", "total_frames": 2582, "estimated_duration_sec": 25.8}
 {"type": "progress", "percent_processed": 3.9, "elapsed_sec": 1.0, "instant_percent": 0.0, "average_percent": 0.0}
-… one "progress" line per second of audio processed …
+… une ligne "progress" par seconde d'audio traité …
 {"type": "result", "ok": true, "exit_code": 0, "deepfake_percent": 0.0, "threshold_percent": 50.0, "verdict": "genuine", "uid": "uid123", "duration_seconds": 25.8, "files_used": 5, "max_files": 10}
 ```
 
-| `type` | When | Fields |
+| `type` | Quand | Champs |
 |---|---|---|
-| `warning` | 0+, informational | `message` |
-| `info` | 0–1, once frame count is known | `total_frames`, `estimated_duration_sec` |
-| `progress` | 0+, while processing | `percent_processed`, `elapsed_sec`, `instant_percent`, `average_percent` |
-| `result` | exactly 1, terminal | `deepfake_percent`, `threshold_percent`, `verdict` ("genuine" / "synthetic"), `files_used`, `max_files` |
-| `error` | terminal, instead of `result` | `error`, `stdout` |
+| `warning` | 0 ou plus, informatif | `message` |
+| `info` | 0–1, une fois le nombre de trames connu | `total_frames`, `estimated_duration_sec` |
+| `progress` | 0 ou plus, pendant le traitement | `percent_processed`, `elapsed_sec`, `instant_percent`, `average_percent` |
+| `result` | exactement 1, terminal | `deepfake_percent`, `threshold_percent`, `verdict` ("genuine" / "synthetic"), `files_used`, `max_files` |
+| `error` | terminal, à la place de `result` | `error`, `stdout` |
 
 ### `WSS /ws/deepfake`
 
-The same deepfake detector as above, over a WebSocket — a cleaner fit than
-chunked HTTP for a live progress bar in a UI.
+Le même détecteur de deepfake que ci-dessus, sur un WebSocket — mieux
+adapté que le HTTP chunké pour une barre de progression en direct dans
+une UI.
 
-**Protocol:**
+**Protocole :**
 
-1. Open `wss://api.candyvoice.com/ws/deepfake`.
-2. Send `{"type": "auth", "token": "<firebase_id_token>"}`.
-3. Receive `{"type": "auth_ok"}` — or an error frame followed by a close.
-4. Send `{"type": "start", "file_name": "clip.wav"}`.
-5. Send one binary frame: the raw file bytes.
-6. Receive zero or more `warning` / `info` / `progress` frames, same shapes
-   as the streaming HTTP endpoint.
-7. Receive exactly one final `result` or `error` frame, then the server
-   closes the connection.
+1. Ouvre `wss://api.candyvoice.com/ws/deepfake`.
+2. Envoie `{"type": "auth", "token": "<firebase_id_token>"}`.
+3. Reçois `{"type": "auth_ok"}` — ou une frame d'erreur suivie d'une fermeture.
+4. Envoie `{"type": "start", "file_name": "clip.wav"}`.
+5. Envoie une frame binaire : les octets bruts du fichier.
+6. Reçois zéro ou plusieurs frames `warning` / `info` / `progress`, mêmes
+   formes que l'endpoint HTTP en streaming.
+7. Reçois exactement une frame finale `result` ou `error`, puis le
+   serveur ferme la connexion.
 
 ```javascript
 const ws = new WebSocket("wss://api.candyvoice.com/ws/deepfake");
@@ -294,10 +307,10 @@ ws.onopen = () => {
 ws.onmessage = (event) => {
   const msg = JSON.parse(event.data);
 
-  // once auth is confirmed, kick off the job
+  // une fois l'auth confirmée, lance le job
   if (msg.type === "auth_ok") {
     ws.send(JSON.stringify({ type: "start", file_name: "clip.wav" }));
-    ws.send(fileBytes); // ArrayBuffer / Blob, right after "start"
+    ws.send(fileBytes); // ArrayBuffer / Blob, juste après "start"
     return;
   }
 
@@ -306,53 +319,55 @@ ws.onmessage = (event) => {
 };
 ```
 
-**Close codes:**
+**Codes de fermeture :**
 
-| Code | Meaning |
+| Code | Signification |
 |---|---|
-| 4403 | Browser `Origin` header present and not on the allow-list. |
-| 4401 | Protocol violation — an unexpected message where `auth` or `start` was required. |
-| 1013 | Rate limited — same 5 req/60s budget as the HTTP endpoints. |
-| 1008 | Upload rejected (bad audio, quota exceeded, etc.) — check the `error` frame sent just before the close. |
+| 4403 | En-tête `Origin` navigateur présent et absent de la liste d'autorisation. |
+| 4401 | Violation de protocole — un message inattendu là où `auth` ou `start` était requis. |
+| 1013 | Limité en débit — même budget de 5 req/60s que les endpoints HTTP. |
+| 1008 | Upload rejeté (audio invalide, quota dépassé, etc.) — vérifie la frame `error` envoyée juste avant la fermeture. |
 
-> The `4403` origin check only fires when an `Origin` header is present —
-> that's a browser thing. Server-to-server WebSocket clients that don't send
-> one aren't restricted by it.
+> La vérification d'origine `4403` ne se déclenche que quand un en-tête
+> `Origin` est présent — c'est une chose de navigateur. Les clients
+> WebSocket serveur-à-serveur qui n'en envoient pas ne sont pas
+> restreints par elle.
 
 ### `GET /outputs/{output_name}`
 
-Downloads a file produced by any endpoint above.
+Télécharge un fichier produit par n'importe quel endpoint ci-dessus.
 
-**Authorization — either of:**
+**Autorisation — l'un des deux :**
 
-| Method | Notes |
+| Méthode | Notes |
 |---|---|
-| `?token=` | The short-lived signed token already embedded in `output_url` — use the URL as returned. This is what an `<audio>` or `<a download>` tag should use, since they can't attach an Authorization header. |
-| Authorization header | A bearer token belonging to the same `uid` that produced the file. |
+| `?token=` | Le token signé à courte durée de vie déjà intégré dans `output_url` — utilise l'URL telle que retournée. C'est ce qu'une balise `<audio>` ou `<a download>` doit utiliser, puisqu'elles ne peuvent pas joindre d'en-tête Authorization. |
+| En-tête Authorization | Un bearer token appartenant au même `uid` que celui qui a produit le fichier. |
 
 ```bash
 curl -L "https://api.candyvoice.com/outputs/uid123_9f2c..._meeting_filtered.wav?token=eyJhbGciOi..." \
   -o meeting_filtered.wav
 ```
 
-> Both "the file doesn't exist" and "you're not authorized to see it" return
-> a plain `404`, on purpose — a permissions failure here won't look any
-> different from a typo in the filename.
+> "Le fichier n'existe pas" et "tu n'es pas autorisé à le voir" retournent
+> tous deux un simple `404`, à dessein — un échec de permission ici n'a
+> pas l'air différent d'une faute de frappe dans le nom de fichier.
 
 ---
 
-## All endpoints
+## Tous les endpoints
 
-| Method | Path | Auth |
+| Méthode | Chemin | Auth |
 |---|---|---|
 | GET | `/health` | — |
 | POST | `/api/noise-filter` | Bearer |
 | POST | `/api/imitation` | Bearer |
 | POST | `/api/frame-recovery` | Bearer |
 | POST | `/api/deepfake-detect` | Bearer |
-| WSS | `/ws/deepfake` | First message |
-| GET | `/outputs/{output_name}` | Token or Bearer |
+| WSS | `/ws/deepfake` | Premier message |
+| GET | `/outputs/{output_name}` | Token ou Bearer |
 
-Limits shown (30s clip cap, 10 files per feature, 5 req/60s) are current
-server defaults and may be tuned over time — treat the error message on a
-400/429 response as the source of truth.
+Les limites indiquées (plafond de clip à 30s, 10 fichiers par
+fonctionnalité, 5 req/60s) sont les valeurs par défaut actuelles du
+serveur et peuvent être ajustées avec le temps — traite le message
+d'erreur d'une réponse 400/429 comme la source de vérité.

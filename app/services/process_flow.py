@@ -1,14 +1,14 @@
-"""Shared synchronous flow for noise-filter / imitation / frame-recovery:
-upload -> duration check -> quota reserve -> run exe -> quota commit ->
-response. Ported 1:1 from the near-identical bodies of
-_handle_noise_filter_request / _handle_imitation_request /
-_handle_frame_recovery_request in api_server.py, factored out since the
-three were ~90% duplicated.
+"""Flux synchrone partagé pour noise-filter / imitation / frame-recovery :
+upload -> vérification de durée -> réservation de quota -> exécution de
+l'exe -> validation du quota -> réponse. Porté 1:1 depuis les corps
+quasi-identiques de _handle_noise_filter_request / _handle_imitation_request
+/ _handle_frame_recovery_request dans api_server.py, factorisé puisque les
+trois étaient dupliqués à ~90%.
 
-This whole function is intentionally synchronous/blocking (Firestore +
-subprocess.run are both blocking) — FastAPI routers call it via
-asyncio.to_thread so the event loop stays free for other requests/websockets
-meanwhile.
+Cette fonction entière est intentionnellement synchrone/bloquante
+(Firestore + subprocess.run sont tous deux bloquants) — les routers
+FastAPI l'appellent via asyncio.to_thread pour que l'event loop reste
+libre pour les autres requêtes/websockets pendant ce temps.
 """
 import os
 import subprocess
@@ -26,18 +26,19 @@ from app.services.quota import QuotaExceededError, commit_reserved_file, release
 
 
 def _header_name(key: str) -> str:
-    """"voice_model" -> "Voice-Model", for turning extra_response_fields
-    into response headers on the binary API-key path."""
+    """"voice_model" -> "Voice-Model", pour transformer extra_response_fields
+    en en-têtes de réponse sur le chemin binaire par clé API."""
     return "-".join(word.capitalize() for word in key.split("_"))
 
 
 def _header_value(value) -> str:
-    """Strips CR/LF before a value goes into a response header. Every
-    current caller (voice_model, frame_recovery_factor, uid, plan) is
-    already allowlisted/bounded upstream, so this is defense in depth
-    rather than a fix for a reachable bug today — but header-building
-    shouldn't rely on that staying true for every future field someone
-    adds to extra_response_fields."""
+    """Retire les CR/LF avant qu'une valeur n'entre dans un en-tête de
+    réponse. Chaque appelant actuel (voice_model, frame_recovery_factor,
+    uid, plan) est déjà validé/borné en amont, donc c'est de la défense en
+    profondeur plutôt que la correction d'un bug atteignable aujourd'hui —
+    mais la construction des en-têtes ne devrait pas reposer sur le fait
+    que ça reste vrai pour chaque futur champ que quelqu'un ajoute à
+    extra_response_fields."""
     return str(value).replace("\r", "").replace("\n", "")
 
 
@@ -54,24 +55,26 @@ def run_feature_processing(
     extra_response_fields: dict | None = None,
     error_label: str,
 ) -> dict | Response:
-    """For an API-key caller (`auth.auth_method == "api_key"`), quota is
-    checked against that key's plan allowance for the current calendar
-    month (api_key_quota.py) rather than the website's flat lifetime
-    usage/{uid} cap — and, since their files are their own application's
-    data rather than ours, nothing is persisted to Firestore or synced to
-    Zoho, and both the uploaded input and the processed output are deleted
-    from local disk immediately after the response is built (rather than
-    kept around on a TTL).
+    """Pour un appelant par clé API (`auth.auth_method == "api_key"`), le
+    quota est vérifié par rapport à l'allocation de l'offre de cette clé
+    pour le mois calendaire en cours (api_key_quota.py) plutôt que par
+    rapport au plafond à vie fixe usage/{uid} du site — et, puisque leurs
+    fichiers sont les données de leur propre application plutôt que les
+    nôtres, rien n'est persisté dans Firestore ni synchronisé vers Zoho,
+    et l'entrée uploadée comme la sortie traitée sont supprimées du disque
+    local immédiatement après la construction de la réponse (plutôt que
+    conservées avec un TTL).
 
-    That API-key path also returns a different *shape* of response: the
-    processed audio comes back as the raw binary response body
-    (`audio/wav`) with metadata in `X-*` headers, instead of the
-    Firebase-session path's JSON envelope with an `output_url` — returning
-    it inline as base64 JSON was tried first, but base64's ~33% size
-    inflation on top of an already-uncompressed WAV made responses balloon
-    to tens of MB for longer clips. Errors still come back as JSON either
-    way (raised as HTTPException, same as always) — only the success
-    response for these three routes differs by auth method.
+    Ce chemin par clé API retourne aussi une *forme* de réponse différente :
+    l'audio traité revient comme le corps de réponse binaire brut
+    (`audio/wav`) avec les métadonnées dans des en-têtes `X-*`, au lieu de
+    l'enveloppe JSON avec un `output_url` du chemin session Firebase — le
+    retourner en ligne en JSON base64 a été essayé en premier, mais
+    l'inflation de ~33% de taille du base64 par-dessus un WAV déjà non
+    compressé faisait gonfler les réponses à des dizaines de Mo pour les
+    clips plus longs. Les erreurs reviennent quand même en JSON dans les
+    deux cas (levées en HTTPException, comme toujours) — seule la réponse
+    de succès de ces trois routes diffère selon la méthode d'auth.
     """
     uid = auth.uid
     is_api_key = auth.auth_method == "api_key"
@@ -79,7 +82,7 @@ def run_feature_processing(
     if not is_api_key:
         sync_confidential_flag_to_zoho(uid, confidential)
 
-    # --- upload -----------------------------------------------------
+    # --- upload ----------------------------------------------------------
     try:
         input_path = audio.save_upload(uid, raw_body, file_name)
     except ValueError as exc:
@@ -87,7 +90,7 @@ def run_feature_processing(
 
     output_path = audio.build_output_path(input_path, output_name, owner_uid=uid)
 
-    # --- duration check ----------------------------------------------
+    # --- vérification de la durée ----------------------------------------
     try:
         minutes_needed = audio.get_audio_duration_minutes(input_path)
     except (OSError, ValueError, wave.Error) as exc:
@@ -105,9 +108,10 @@ def run_feature_processing(
             ),
         )
 
-    # --- quota reservation --------------------------------------------
-    # API-key calls reserve against that key's plan/monthly allowance;
-    # Firebase-session calls reserve against the website's flat lifetime cap.
+    # --- réservation de quota ---------------------------------------------
+    # Les appels par clé API réservent sur l'allocation offre/mensuelle de
+    # cette clé ; les appels en session Firebase réservent sur le plafond
+    # fixe à vie du site.
     try:
         firestore_client = get_firestore_client()
         if is_api_key:
@@ -130,7 +134,7 @@ def run_feature_processing(
 
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
 
-    # --- run the exe ----------------------------------------------------
+    # --- exécution de l'exe -----------------------------------------------
     try:
         command = build_command(input_path, output_path)
         completed = subprocess.run(
@@ -166,7 +170,7 @@ def run_feature_processing(
             },
         )
 
-    # --- quota commit ---------------------------------------------------
+    # --- validation du quota -----------------------------------------------
     try:
         files_used = commit_reserved_file(firestore_client.transaction(), usage_ref, feature_key)
     except Exception as exc:  # noqa: BLE001
@@ -177,12 +181,13 @@ def run_feature_processing(
     if files_used is not None and not is_api_key:
         log_usage_event(uid, feature_key)
 
-    # --- API-key path: raw binary body + headers, immediate cleanup -------
+    # --- chemin clé API : corps binaire brut + en-têtes, nettoyage immédiat -
     if is_api_key:
         if not os.path.exists(output_path):
-            # Shouldn't normally happen for a successful run of these three
-            # features, but there's nothing to serve as a binary body — fall
-            # back to a plain JSON envelope rather than an empty response.
+            # Ne devrait normalement pas arriver pour une exécution réussie
+            # de ces trois fonctionnalités, mais il n'y a rien à servir
+            # comme corps binaire — on retombe sur une simple enveloppe
+            # JSON plutôt qu'une réponse vide.
             audio.cleanup_file(input_path)
             return {
                 "ok": True,
@@ -210,10 +215,11 @@ def run_feature_processing(
             "X-Plan": _header_value(auth.plan or ""),
         }
         if files_used is None:
-            # Mirrors the Firebase-session JSON path's usage_warning field —
-            # processing succeeded but quota tracking may be off, and an
-            # API-key caller reading X-Files-Used shouldn't mistake an empty
-            # value for "zero used" with no explanation.
+            # Reflète le champ usage_warning du chemin JSON de la session
+            # Firebase — le traitement a réussi mais le suivi du quota
+            # peut être faussé, et un appelant par clé API lisant
+            # X-Files-Used ne devrait pas confondre une valeur vide avec
+            # "zéro utilisé" sans explication.
             headers["X-Usage-Warning"] = _header_value(
                 f"{error_label.capitalize()} succeeded, but quota could not be recorded. "
                 "Please contact support if this persists."
@@ -223,7 +229,7 @@ def run_feature_processing(
 
         return Response(content=output_bytes, media_type="audio/wav", headers=headers)
 
-    # --- Firebase-session path: JSON envelope + downloadable URL ----------
+    # --- chemin session Firebase : enveloppe JSON + URL téléchargeable -----
     output_url = None
     if os.path.exists(output_path):
         output_basename = os.path.basename(output_path)
@@ -239,11 +245,12 @@ def run_feature_processing(
             )
         schedule_file_cleanup(output_path)
 
-    # Keep the input file around (rather than deleting it immediately) so
-    # the unsatisfied-survey Zoho attachment flow (webhooks.py) can attach
-    # the original submission alongside the output. Same TTL as the
-    # output, so it isn't retained indefinitely if the survey/attachment
-    # flow never fires for this file.
+    # Conserve le fichier d'entrée (plutôt que de le supprimer
+    # immédiatement) pour que le flux de pièce jointe Zoho du sondage
+    # d'insatisfaction (webhooks.py) puisse attacher la soumission
+    # originale à côté de la sortie. Même TTL que la sortie, pour qu'il ne
+    # soit pas retenu indéfiniment si le flux sondage/pièce jointe ne se
+    # déclenche jamais pour ce fichier.
     schedule_file_cleanup(input_path)
 
     payload = {

@@ -14,15 +14,16 @@ from app.routers import admin_api_keys, admin_reports, api_keys, deepfake, frame
 app = FastAPI(
     title="CandyVoice API",
     version="1.0.0",
-    # Server header used to say "CandyVoiceAPI" instead of leaking the
-    # exact Python version — FastAPI/uvicorn set their own Server header;
-    # override it at the reverse-proxy layer (nginx/Caddy) in production
-    # rather than trying to fight uvicorn's header here.
+    # L'en-tête Server disait "CandyVoiceAPI" plutôt que de laisser fuiter
+    # la version Python exacte — FastAPI/uvicorn définissent leur propre
+    # en-tête Server ; à surcharger au niveau du reverse-proxy (nginx/Caddy)
+    # en production plutôt que d'essayer de lutter contre l'en-tête d'uvicorn ici.
 )
 
-# CORS: same allow-list as the original ALLOWED_ORIGINS set. Browsers only
-# — this is not the access-control layer (the bearer token check is), same
-# reasoning as the original file's comment.
+# CORS : même liste d'autorisation que l'ensemble ALLOWED_ORIGINS d'origine.
+# Navigateurs uniquement — ce n'est pas la couche de contrôle d'accès (c'est
+# la vérification du bearer token qui l'est), même raisonnement que le
+# commentaire du fichier d'origine.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=list(config.ALLOWED_ORIGINS),
@@ -33,10 +34,11 @@ app.add_middleware(
         "X-Frame-Recovery-Factor", "X-Confidential-Check", "Authorization",
         "X-API-Key",
     ],
-    # Browsers hide all response headers from JS by default except a small
-    # "simple" set (Content-Type etc.) — without this, the X-* metadata
-    # headers on the API-key binary response (see process_flow.py) would be
-    # sent but unreadable by fetch()/XHR from an allowed origin.
+    # Par défaut, les navigateurs cachent tous les en-têtes de réponse à JS
+    # sauf un petit ensemble "simple" (Content-Type etc.) — sans ceci, les
+    # en-têtes de métadonnées X-* de la réponse binaire par clé API (voir
+    # process_flow.py) seraient envoyés mais illisibles par fetch()/XHR
+    # depuis une origine autorisée.
     expose_headers=[
         "X-Exit-Code", "X-Uid", "X-Duration-Seconds", "X-Files-Used",
         "X-Max-Files", "X-Plan", "X-Voice-Model", "X-Frame-Recovery-Factor",
@@ -47,9 +49,10 @@ app.add_middleware(
 @app.on_event("startup")
 async def on_startup():
     init_firebase_admin()
-    # Backstop for the per-file threading.Timer cleanup in downloads.py —
-    # see periodic_cleanup_sweep's docstring for why this is needed in a
-    # containerized/multi-replica setup.
+    # Filet de sécurité pour le nettoyage par threading.Timer par fichier
+    # dans downloads.py — voir la docstring de periodic_cleanup_sweep pour
+    # savoir pourquoi c'est nécessaire dans une installation conteneurisée
+    # multi-réplicas.
     app.state.cleanup_sweep_task = asyncio.create_task(periodic_cleanup_sweep())
 
 
@@ -84,12 +87,12 @@ async def index():
 
 @app.exception_handler(FastAPIHTTPException)
 async def http_exception_handler(request: Request, exc: FastAPIHTTPException):
-    """Overrides FastAPI's default {"detail": ...} envelope so error
-    responses keep the exact shape the current frontend already expects
-    (e.g. {"error": "..."} or, for exe-failure cases, the full
-    {"ok": False, "error": ..., "stdout": ...} dict) — this is what lets
-    the frontend cut over without also needing a rewrite for this
-    migration.
+    """Surcharge l'enveloppe par défaut {"detail": ...} de FastAPI pour que
+    les réponses d'erreur gardent exactement la forme que le frontend
+    actuel attend déjà (ex. {"error": "..."} ou, pour les cas d'échec de
+    l'exe, le dict complet {"ok": False, "error": ..., "stdout": ...}) —
+    c'est ce qui permet au frontend de basculer sans avoir besoin d'une
+    réécriture pour cette migration.
     """
     if isinstance(exc.detail, dict):
         return JSONResponse(exc.detail, status_code=exc.status_code)
@@ -98,8 +101,8 @@ async def http_exception_handler(request: Request, exc: FastAPIHTTPException):
 
 @app.exception_handler(Exception)
 async def unhandled_exception_handler(request: Request, exc: Exception):
-    # Last-resort safety net so an unexpected error still comes back as
-    # JSON rather than a bare 500 HTML page.
+    # Filet de sécurité de dernier recours pour qu'une erreur inattendue
+    # revienne quand même en JSON plutôt qu'en une simple page HTML 500.
     print(f"Unhandled exception on {request.url.path}: {exc}")
     return JSONResponse({"error": "Internal server error"}, status_code=500)
 

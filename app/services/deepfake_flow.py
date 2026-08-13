@@ -1,8 +1,8 @@
-"""Bridges the blocking _DetectorProcess line-iterator to an async
-generator of event dicts, so it can be consumed either by a chunked NDJSON
-HTTP StreamingResponse (backward-compatible with the current frontend) or
-by a WebSocket handler (the new SaaS-style route). This is the async
-equivalent of the for-loop inside
+"""Fait le pont entre l'itérateur de lignes bloquant de _DetectorProcess et
+un générateur async de dicts d'événements, pour qu'il puisse être consommé
+soit par une HTTP StreamingResponse NDJSON chunkée (rétrocompatible avec
+le frontend actuel), soit par un handler WebSocket (la nouvelle route
+façon SaaS). C'est l'équivalent async de la boucle for à l'intérieur de
 NoiseFilterHandler._handle_deepfake_request.
 """
 import asyncio
@@ -19,15 +19,15 @@ _SENTINEL = object()
 
 
 def run_deepfake_stream(command, cwd, timeout_seconds=600, cancel_event: threading.Event = None):
-    """Returns an async generator yielding event dicts:
-      {"type": "warning", ...}   - no live progress available (no pywinpty)
-      {"type": "progress", ...}  - per-frame progress
-      {"type": "info", ...}      - one-time header (total_frames, estimated_duration_sec)
+    """Retourne un générateur async produisant des dicts d'événements :
+      {"type": "warning", ...}   - pas de progression en direct disponible (pas de pywinpty)
+      {"type": "progress", ...}  - progression par trame
+      {"type": "info", ...}      - en-tête unique (total_frames, estimated_duration_sec)
       {"type": "__done__", "returncode": int, "timed_out": bool, "full_stdout": str}
 
-    The caller is responsible for turning "__done__" into the final
-    "result"/"error" event (that part needs the quota-commit call, which is
-    the caller's job, not this generator's).
+    C'est à l'appelant de transformer "__done__" en événement final
+    "result"/"error" (cette partie a besoin de l'appel de commit de quota,
+    qui est le travail de l'appelant, pas celui de ce générateur).
     """
     q: "queue.Queue" = queue.Queue()
     cancel_event = cancel_event or threading.Event()
@@ -35,11 +35,12 @@ def run_deepfake_stream(command, cwd, timeout_seconds=600, cancel_event: threadi
     def worker():
         try:
             detector = _DetectorProcess(command, cwd)
-        except Exception as exc:  # noqa: BLE001 - spawn can fail via OSError or a pty backend error
-            # Emitted as "__done__" (not a standalone "error") so the caller's
-            # normal completion path runs and releases the quota slot that
-            # was reserved before this stream started — a bare "error" event
-            # here was previously silently dropping that reservation forever.
+        except Exception as exc:  # noqa: BLE001 - le lancement peut échouer via OSError ou une erreur du backend pty
+            # Émis comme "__done__" (pas un simple "error") pour que le
+            # chemin de complétion normal de l'appelant s'exécute et libère
+            # le slot de quota réservé avant le début de ce flux — un simple
+            # événement "error" ici faisait auparavant perdre silencieusement
+            # cette réservation pour toujours.
             q.put({
                 "type": "__done__",
                 "cancelled": False,

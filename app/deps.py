@@ -1,7 +1,7 @@
-"""Shared FastAPI dependencies: Firebase auth + API-key auth + rate
-limiting. Replaces the repeated _authenticate_request / check_rate_limit
-calls at the top of every handler in api_server.py with a single reusable
-dependency.
+"""Dépendances FastAPI partagées : auth Firebase + auth par clé API +
+limitation de débit. Remplace les appels répétés à _authenticate_request
+/ check_rate_limit en tête de chaque handler dans api_server.py par une
+seule dépendance réutilisable.
 """
 import threading
 import time
@@ -24,7 +24,7 @@ class AuthContext:
 
 
 _rate_limit_lock = threading.Lock()
-_recent_requests_by_bucket = {}  # bucket key -> list[timestamp]
+_recent_requests_by_bucket = {}  # clé de bucket -> list[timestamp]
 
 
 class RateLimitExceededError(Exception):
@@ -32,14 +32,15 @@ class RateLimitExceededError(Exception):
 
 
 def check_rate_limit(bucket_key: str, max_requests: int | None = None, window_seconds: int | None = None):
-    """Raises RateLimitExceededError if `bucket_key` has made too many
-    submissions in the current rolling window. `bucket_key` is a plain uid
-    for the Firebase-session path, or "apikey:<key_id>" for API-key
-    callers — each key gets its own independent budget sized to its plan,
-    rather than sharing one bucket with that user's browser session (which
-    might be on a different limit entirely). Thread-safe: FastAPI/Starlette
-    may run sync dependencies in a thread pool, same as
-    ThreadingHTTPServer did."""
+    """Lève RateLimitExceededError si `bucket_key` a fait trop de
+    soumissions dans la fenêtre glissante actuelle. `bucket_key` est un
+    simple uid pour le chemin session Firebase, ou "apikey:<key_id>" pour
+    les appelants par clé API — chaque clé a son propre budget
+    indépendant, dimensionné selon son offre, plutôt que de partager un
+    bucket avec la session navigateur de cet utilisateur (qui pourrait
+    être sur une limite complètement différente). Thread-safe :
+    FastAPI/Starlette peut exécuter des dépendances synchrones dans un
+    thread pool, comme le faisait ThreadingHTTPServer."""
     max_requests = config.RATE_LIMIT_MAX_REQUESTS if max_requests is None else max_requests
     window_seconds = config.RATE_LIMIT_WINDOW_SECONDS if window_seconds is None else window_seconds
 
@@ -76,7 +77,7 @@ def _verify_bearer_token(authorization: str) -> dict:
         raise HTTPException(status_code=401, detail="Invalid authentication token")
     except HTTPException:
         raise
-    except Exception as exc:  # noqa: BLE001 - surface unexpected verification errors as 401s, not 500s
+    except Exception as exc:  # noqa: BLE001 - laisse remonter les erreurs de vérification inattendues en 401, pas en 500
         print(f"Firebase ID token verification failed: {exc}")
         raise HTTPException(status_code=401, detail="Could not verify authentication token")
 
@@ -88,10 +89,10 @@ def _verify_bearer_token(authorization: str) -> dict:
 
 
 async def get_current_user(authorization: str = Header(default="")) -> dict:
-    """FastAPI dependency: verifies the Firebase ID token on the
-    Authorization header and returns the decoded token dict. Raises
-    HTTPException(401) on any failure — FastAPI turns that into the JSON
-    error response automatically."""
+    """Dépendance FastAPI : vérifie le token d'ID Firebase dans l'en-tête
+    Authorization et retourne le dict du token décodé. Lève une
+    HTTPException(401) en cas d'échec — FastAPI la transforme
+    automatiquement en réponse JSON d'erreur."""
     return _verify_bearer_token(authorization)
 
 
@@ -99,14 +100,15 @@ async def get_current_auth(
     authorization: str = Header(default=""),
     x_api_key: str | None = Header(default=None, alias="X-API-Key"),
 ) -> AuthContext:
-    """Accepts either an API key (X-API-Key header — for server-to-server
-    callers with their own application, issued via /api/keys) or a Firebase
-    ID token (Authorization: Bearer ...). The API key is tried first when
-    present, since a caller using one wouldn't normally send the other —
-    but an invalid/revoked key doesn't shadow an otherwise-valid bearer
-    token if one was also sent (e.g. a stale key left over from testing
-    alongside a real browser session): only 401 on the key specifically
-    when there's no bearer token to fall back to."""
+    """Accepte soit une clé API (en-tête X-API-Key — pour les appelants
+    serveur-à-serveur avec leur propre application, émise via /api/keys),
+    soit un token d'ID Firebase (Authorization: Bearer ...). La clé API
+    est essayée en premier quand elle est présente, puisqu'un appelant
+    utilisant l'une ne devrait normalement pas envoyer l'autre — mais une
+    clé invalide/révoquée ne masque pas un bearer token par ailleurs
+    valide s'il a aussi été envoyé (ex. une clé de test périmée laissée à
+    côté d'une vraie session navigateur) : on ne renvoie 401 sur la clé
+    spécifiquement que s'il n'y a pas de bearer token de secours."""
     if x_api_key:
         try:
             record = resolve_api_key(x_api_key)
@@ -122,11 +124,12 @@ async def get_current_auth(
 
 
 async def get_current_uid_rate_limited(auth: AuthContext = Depends(get_current_auth)) -> AuthContext:
-    """Combines auth + rate limiting into one dependency, mirroring
-    NoiseFilterHandler._authenticate_and_rate_limit(). Use this as the
-    dependency on every feature-processing route. API-key callers are
-    rate-limited per key, at their plan's budget; Firebase-session callers
-    keep the flat global budget, per uid."""
+    """Combine auth + limitation de débit en une seule dépendance, à
+    l'image de NoiseFilterHandler._authenticate_and_rate_limit(). À
+    utiliser comme dépendance sur chaque route de traitement de
+    fonctionnalité. Les appelants par clé API sont limités en débit par
+    clé, au budget de leur offre ; les appelants en session Firebase
+    gardent le budget global fixe, par uid."""
     if auth.auth_method == "api_key":
         max_requests, window_seconds = plan_rate_limit(auth.plan)
         bucket_key = f"apikey:{auth.key_id}"
@@ -143,10 +146,11 @@ async def get_current_uid_rate_limited(auth: AuthContext = Depends(get_current_a
 
 
 async def verify_websocket_token(token: str) -> dict:
-    """Same token verification as get_current_user, but for use inside a
-    WebSocket handler after receiving the token as the first message
-    (WebSocket handshakes can't reliably carry custom Authorization headers
-    from a browser)."""
+    """Même vérification de token que get_current_user, mais pour
+    utilisation à l'intérieur d'un handler WebSocket après réception du
+    token comme premier message (les handshakes WebSocket ne peuvent pas
+    porter de manière fiable des en-têtes Authorization personnalisés
+    depuis un navigateur)."""
     if not token:
         raise ValueError("Missing auth token")
     try:

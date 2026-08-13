@@ -1,88 +1,94 @@
-# CandyVoice API — API Keys
+# CandyVoice API — Clés API
 
-How a signed-in user gets a long-lived API key for their own application,
-how that key behaves differently from a normal Firebase-session call, and
-the staff-only endpoints for managing keys and reporting on usage across
-all users. Companion to
-[`API.md`](API.md) — start there for the processing endpoints themselves;
-this doc only covers what's specific to keys.
+Comment un utilisateur connecté obtient une clé API longue durée pour sa
+propre application, comment cette clé se comporte différemment d'un appel
+en session Firebase normale, et les endpoints réservés au staff pour
+gérer les clés et faire du reporting sur l'usage de tous les
+utilisateurs. Complément à
+[`API.md`](API.md) — commence là-bas pour les endpoints de traitement
+eux-mêmes ; ce document ne couvre que ce qui est spécifique aux clés.
 
-## Why a key, and how it differs from your Firebase session
+## Pourquoi une clé, et en quoi ça diffère de ta session Firebase
 
-The website itself keeps using Firebase auth exactly as today — nothing
-changes there. A key is for the case where a user wants to call the
-processing endpoints from **their own backend/app**, outside the browser
-session, without a human re-logging-in on every call.
+Le site web lui-même continue d'utiliser l'auth Firebase exactement comme
+aujourd'hui — rien ne change là-dessus. Une clé est pour le cas où un
+utilisateur veut appeler les endpoints de traitement depuis **son propre
+backend/app**, en dehors de la session navigateur, sans qu'un humain se
+reconnecte à chaque appel.
 
-Calling with a key instead of a Firebase bearer token changes processing
-behavior, not just how you authenticate:
+Appeler avec une clé plutôt qu'un bearer token Firebase change le
+comportement du traitement, pas seulement la façon dont tu t'authentifies :
 
-| | Firebase session | API key |
+| | Session Firebase | Clé API |
 |---|---|---|
-| Quota (`files_used`/`max_files`) | Flat lifetime cap (10 files/feature, no reset) | **Per-key, per calendar month, per plan** — see [Plans](#plans--limits) |
-| Rate limit | 5 req/60s, shared across all your Firebase-session calls | Per-key, per plan (5–100 req/60s) — see [Plans](#plans--limits) |
-| Response shape | JSON envelope, `output_url` download link (file kept ~1h) | **Raw audio bytes as the response body** (`audio/wav`), metadata in headers; no file kept on the server — see [below](#using-a-key-against-the-processing-endpoints) |
-| Processed-outputs history / Zoho sync | Saved | **Skipped entirely** — nothing is persisted or synced |
-| Uploaded input file | Kept briefly (Zoho attachment flow) | **Deleted immediately** after the response is built |
+| Quota (`files_used`/`max_files`) | Plafond fixe à vie (10 fichiers/fonctionnalité, pas de réinitialisation) | **Par clé, par mois calendaire, par offre** — voir [Offres et limites](#offres-et-limites) |
+| Limite de débit | 5 req/60s, partagée entre tous tes appels en session Firebase | Par clé, par offre (5–100 req/60s) — voir [Offres et limites](#offres-et-limites) |
+| Forme de la réponse | Enveloppe JSON, lien de téléchargement `output_url` (fichier gardé ~1h) | **Octets audio bruts comme corps de réponse** (`audio/wav`), métadonnées dans les en-têtes ; aucun fichier gardé sur le serveur — voir [plus bas](#utiliser-une-clé-avec-les-endpoints-de-traitement) |
+| Historique des sorties traitées / synchro Zoho | Sauvegardé | **Entièrement sauté** — rien n'est persisté ni synchronisé |
+| Fichier d'entrée uploadé | Gardé brièvement (flux de pièce jointe Zoho) | **Supprimé immédiatement** après la construction de la réponse |
 
-In short: a key is for "this is my own application's data, processed and
-handed straight back" — nothing about the request is retained
-server-side once the response is sent, but usage still counts against
-that key's plan.
+En bref : une clé sert quand "ce sont les données de ma propre
+application, traitées et rendues directement" — rien concernant la
+requête n'est retenu côté serveur une fois la réponse envoyée, mais
+l'usage compte quand même dans l'offre de cette clé.
 
-## Plans & limits
+## Offres et limites
 
-Chosen when the key is created (see `POST /api/keys` below) and shown on
-the pricing page. Numbers are current provisional defaults, not a stable
-contract — treat the `limit`/`rate_limit` fields returned by the API
-itself (creation response, [usage endpoint](#get-apikeyskey_idusage)) as
-the source of truth, the same way `API.md` already tells you to for the
-Firebase-session limits.
+Choisie à la création de la clé (voir `POST /api/keys` plus bas) et
+affichée sur la page tarifs. Les chiffres sont les valeurs par défaut
+provisoires actuelles, pas un contrat stable — traite les champs
+`limit`/`rate_limit` retournés par l'API elle-même (réponse de création,
+[endpoint d'usage](#get-apikeyskey_idusage)) comme la source de vérité, de
+la même façon qu'`API.md` te le dit déjà pour les limites de la session
+Firebase.
 
-| Plan | Files / month / tool | Rate limit |
+| Offre | Fichiers / mois / outil | Limite de débit |
 |---|---|---|
 | `starter` | 50 | 5 req/60s |
 | `pro` | 500 | 20 req/60s |
-| `enterprise` | Unlimited (custom limits: contact us) | 100 req/60s |
+| `enterprise` | Illimité (limites personnalisées : contacte-nous) | 100 req/60s |
 
-"Per tool" means each processing endpoint (noise filter, imitation, frame
-recovery, deepfake detection) has its own independent monthly allowance —
-using up noise filter doesn't touch your imitation allowance. Usage resets
-to 0 at the start of each calendar month (UTC), per key.
+"Par outil" signifie que chaque endpoint de traitement (filtre de bruit,
+imitation, récupération de trames, détection de deepfake) a sa propre
+allocation mensuelle indépendante — épuiser le filtre de bruit ne touche
+pas ton allocation d'imitation. L'usage revient à 0 au début de chaque
+mois calendaire (UTC), par clé.
 
-> **Trust boundary today:** `plan` on `POST /api/keys` is currently
-> whatever the client sends — there's no payment verification behind it
-> yet, since checkout itself is still a mockup. Before this goes live as a
-> paid product, plan assignment needs to move behind a server-verified
-> event (e.g. a Stripe webhook fired after checkout), otherwise nothing
-> stops a caller from just requesting `"enterprise"`. Until then, treat
-> self-service plan selection as provisional/demo behavior.
+> **Frontière de confiance aujourd'hui :** `plan` sur `POST /api/keys` est
+> actuellement ce que le client envoie — il n'y a pas encore de
+> vérification de paiement derrière, puisque le paiement lui-même n'est
+> encore qu'une maquette. Avant que ça devienne un vrai produit payant,
+> l'attribution de l'offre doit passer derrière un événement vérifié côté
+> serveur (ex. un webhook Stripe déclenché après le paiement), sinon rien
+> n'empêche un appelant de simplement demander `"enterprise"`. En
+> attendant, traite la sélection d'offre en self-service comme un
+> comportement provisoire/de démo.
 
-## Getting a key (self-service, from your frontend)
+## Obtenir une clé (self-service, depuis ton frontend)
 
-These endpoints take the **same Firebase ID token** your frontend already
-sends everywhere else — a key can only ever be created for or scoped to
-the signed-in user's own account, there's no way to touch anyone else's
-key through these.
+Ces endpoints prennent le **même token d'ID Firebase** que ton frontend
+envoie déjà partout ailleurs — une clé ne peut jamais être créée pour ou
+rattachée qu'au propre compte de l'utilisateur connecté, il n'y a aucun
+moyen de toucher la clé de quelqu'un d'autre via ceux-ci.
 
 ### `POST /api/keys`
 
-Creates a new key for the signed-in user, on the plan they picked on the
-pricing page.
+Crée une nouvelle clé pour l'utilisateur connecté, sur l'offre qu'il a
+choisie sur la page tarifs.
 
-| Header | Required | Notes |
+| En-tête | Requis | Notes |
 |---|---|---|
-| `Authorization` | required | `Bearer <firebase_id_token>` |
+| `Authorization` | requis | `Bearer <firebase_id_token>` |
 
-Body:
+Corps :
 
 ```json
 { "label": "my mobile app", "plan": "pro" }
 ```
 
-Both fields are optional — `label` defaults to `null`, `plan` defaults to
-`"starter"`. `plan` must be one of `starter` / `pro` / `enterprise`; an
-unrecognized value is a `400`.
+Les deux champs sont optionnels — `label` vaut `null` par défaut, `plan`
+vaut `"starter"` par défaut. `plan` doit être l'un de `starter` / `pro` /
+`enterprise` ; une valeur non reconnue donne un `400`.
 
 ```bash
 curl -X POST https://api.candyvoice.com/api/keys \
@@ -101,16 +107,18 @@ curl -X POST https://api.candyvoice.com/api/keys \
 }
 ```
 
-> **`api_key` is shown exactly once.** Only its hash is stored server-side
-> — there's no "forgot my key" recovery, only revoke-and-create-a-new-one.
-> Show it to the user once, in a copy-to-clipboard box, and tell them to
-> save it somewhere safe (a password manager, their own app's secrets
-> store). Treat it like a password: never log it, never put it in a URL.
+> **`api_key` n'est montrée qu'une seule fois.** Seul son hash est stocké
+> côté serveur — il n'y a pas de récupération "j'ai oublié ma clé", juste
+> révoquer-et-en-créer-une-nouvelle. Montre-la à l'utilisateur une fois,
+> dans un encart copier-coller, et dis-lui de la sauvegarder quelque part
+> de sûr (un gestionnaire de mots de passe, le coffre à secrets de sa
+> propre app). Traite-la comme un mot de passe : ne la logue jamais, ne la
+> mets jamais dans une URL.
 
 ### `GET /api/keys`
 
-Lists the signed-in user's own keys — metadata only, the raw key is never
-returned again after creation.
+Liste les propres clés de l'utilisateur connecté — métadonnées
+uniquement, la clé brute n'est plus jamais retournée après la création.
 
 ```bash
 curl https://api.candyvoice.com/api/keys \
@@ -133,16 +141,18 @@ curl https://api.candyvoice.com/api/keys \
 }
 ```
 
-Use this to render an API-keys settings page: label, plan badge, creation
-date, last-used date, and a revoke button per row. There's no "last 4
-characters" of the key to show, since the raw value was never stored —
-`label` (set at creation) is what the user relies on to tell keys apart.
-Link each row to the usage endpoint below for the actual quota bars.
+Utilise ceci pour afficher une page de paramètres de clés API : label,
+badge d'offre, date de création, date de dernière utilisation, et un
+bouton de révocation par ligne. Il n'y a pas de "4 derniers caractères" de
+la clé à afficher, puisque la valeur brute n'a jamais été stockée —
+`label` (défini à la création) est ce sur quoi l'utilisateur s'appuie
+pour distinguer ses clés. Relie chaque ligne à l'endpoint d'usage
+ci-dessous pour les vraies barres de quota.
 
 ### `GET /api/keys/{key_id}/usage`
 
-Current-billing-period usage and limits for one key — everything a usage
-dashboard needs, in one call.
+Usage et limites de la période de facturation en cours pour une clé —
+tout ce dont un tableau de bord d'usage a besoin, en un seul appel.
 
 ```bash
 curl https://api.candyvoice.com/api/keys/3f9c2a...e01b/usage \
@@ -167,14 +177,14 @@ curl https://api.candyvoice.com/api/keys/3f9c2a...e01b/usage \
 }
 ```
 
-`limit` is `null` for an unlimited (`enterprise`) plan. `period` is the
-current UTC calendar month (`YYYY-MM`) — usage under a past period isn't
-exposed through this endpoint today, only the live one.
+`limit` vaut `null` pour une offre illimitée (`enterprise`). `period` est
+le mois calendaire UTC en cours (`YYYY-MM`) — l'usage d'une période passée
+n'est pas exposé par cet endpoint aujourd'hui, seulement celui en cours.
 
 ### `POST /api/keys/{key_id}/revoke`
 
-Revokes one of the signed-in user's own keys immediately. Any subsequent
-call made with it gets a `401`.
+Révoque immédiatement une des propres clés de l'utilisateur connecté.
+Tout appel ultérieur fait avec elle reçoit un `401`.
 
 ```bash
 curl -X POST https://api.candyvoice.com/api/keys/3f9c2a...e01b/revoke \
@@ -185,24 +195,26 @@ curl -X POST https://api.candyvoice.com/api/keys/3f9c2a...e01b/revoke \
 { "ok": true, "key_id": "3f9c2a...e01b", "revoked": true }
 ```
 
-A `key_id` that doesn't exist, is already revoked, or belongs to a
-different user all return the same `404 API key not found` — a user can't
-use this to probe whether some other account's key exists.
+Un `key_id` qui n'existe pas, est déjà révoqué, ou appartient à un autre
+utilisateur retournent tous le même `404 API key not found` — un
+utilisateur ne peut pas s'en servir pour sonder si la clé d'un autre
+compte existe.
 
-## Admin (staff-only)
+## Administration (réservé au staff)
 
-For internal tooling — a support/ops dashboard, not the customer-facing
-frontend. Gated by the same `ADMIN_EMAILS` allow-list as
-`/api/admin/send-report`: send a Firebase ID token belonging to an admin
-account as `Authorization: Bearer ...`, same as any other admin route.
-Unlike everything above, these act on *any* user's keys, not just the
-caller's own.
+Pour l'outillage interne — un tableau de bord support/ops, pas le
+frontend orienté client. Protégé par la même liste d'autorisation
+`ADMIN_EMAILS` que `/api/admin/send-report` : envoie un token d'ID
+Firebase appartenant à un compte admin en `Authorization: Bearer ...`,
+comme toute autre route admin. Contrairement à tout ce qui précède, ces
+endpoints agissent sur les clés de *n'importe quel* utilisateur, pas
+seulement celles de l'appelant.
 
 ### `POST /api/admin/api-keys`
 
-Issues a key for an arbitrary `uid` — e.g. provisioning one on a
-customer's behalf, or backfilling a key for support to hand over
-manually.
+Émet une clé pour un `uid` arbitraire — ex. en provisionner une pour le
+compte d'un client, ou combler après coup une clé que le support doit
+remettre manuellement.
 
 ```bash
 curl -X POST https://api.candyvoice.com/api/admin/api-keys \
@@ -217,8 +229,8 @@ curl -X POST https://api.candyvoice.com/api/admin/api-keys \
 
 ### `GET /api/admin/api-keys?uid=`
 
-Lists one user's keys — same shape as the self-service `GET /api/keys`,
-for any `uid` you supply.
+Liste les clés d'un utilisateur — même forme que le `GET /api/keys` en
+self-service, pour n'importe quel `uid` que tu fournis.
 
 ```bash
 curl "https://api.candyvoice.com/api/admin/api-keys?uid=uid456" \
@@ -231,11 +243,12 @@ curl "https://api.candyvoice.com/api/admin/api-keys?uid=uid456" \
 
 ### `GET /api/admin/api-keys/all`
 
-Every key across every user, newest first — this is the one for a "list
-all API keys, their plans, and who they belong to" admin table.
-Paginated: pass `?limit=` (default 50, capped at 200) and, for the next
-page, the previous response's `next_cursor` back as `?cursor=`;
-`next_cursor: null` means there's no more.
+Chaque clé de tous les utilisateurs, la plus récente d'abord — c'est
+celui-ci pour un tableau admin "liste toutes les clés API, leurs offres,
+et à qui elles appartiennent". Paginé : passe `?limit=` (50 par défaut,
+plafonné à 200) et, pour la page suivante, le `next_cursor` de la réponse
+précédente en `?cursor=` ; `next_cursor: null` signifie qu'il n'y en a
+plus.
 
 ```bash
 curl "https://api.candyvoice.com/api/admin/api-keys/all?limit=50" \
@@ -253,18 +266,19 @@ curl "https://api.candyvoice.com/api/admin/api-keys/all?limit=50" \
 }
 ```
 
-`email` is resolved from Firebase Auth in one batched lookup per page
-(`firebase_admin.auth.get_users()`, up to 100 uids per call — cheap even
-at the max page size of 200, which is at most 2 calls) rather than one
-lookup per key. It's `null` when that `uid` no longer has a Firebase Auth
-account (e.g. deleted) rather than a failed request — a single unresolved
-email never blocks the rest of the list.
+`email` est résolu depuis Firebase Auth en une recherche par lot par page
+(`firebase_admin.auth.get_users()`, jusqu'à 100 uids par appel — peu
+coûteux même à la taille de page max de 200, qui fait au plus 2 appels)
+plutôt qu'une recherche par clé. Il vaut `null` quand cet `uid` n'a plus
+de compte Firebase Auth (ex. supprimé) plutôt qu'une requête en échec —
+un seul e-mail non résolu ne bloque jamais le reste de la liste.
 
 ### `POST /api/admin/api-keys/{key_id}/revoke`
 
-Revokes any key, regardless of owner — for a lost/compromised-key support
-request. Same response shape and `404` behavior as the self-service
-version above, just without the ownership check.
+Révoque n'importe quelle clé, peu importe le propriétaire — pour une
+demande de support pour une clé perdue/compromise. Même forme de réponse
+et comportement `404` que la version self-service ci-dessus, juste sans
+la vérification de propriétaire.
 
 ```bash
 curl -X POST https://api.candyvoice.com/api/admin/api-keys/8b1e0f...4a2c/revoke \
@@ -277,10 +291,10 @@ curl -X POST https://api.candyvoice.com/api/admin/api-keys/8b1e0f...4a2c/revoke 
 
 ### `POST /api/admin/api-keys/{key_id}/plan`
 
-Changes a key's plan directly — a manual Enterprise ("sur mesure")
-sign-up, or a support-handled upgrade/downgrade outside the self-service
-flow. `plan` must be one of `starter` / `pro` / `enterprise` (`400` if
-not); unknown `key_id` is a `404`.
+Change directement l'offre d'une clé — un abonnement Enterprise ("sur
+mesure") manuel, ou un changement d'offre géré par le support en dehors
+du parcours self-service. `plan` doit être l'un de `starter` / `pro` /
+`enterprise` (`400` sinon) ; un `key_id` inconnu donne un `404`.
 
 ```bash
 curl -X POST https://api.candyvoice.com/api/admin/api-keys/8b1e0f...4a2c/plan \
@@ -295,23 +309,25 @@ curl -X POST https://api.candyvoice.com/api/admin/api-keys/8b1e0f...4a2c/plan \
 
 ### `POST /api/admin/send-api-usage-report`
 
-Emails a per-user rollup of API-key usage for one calendar month to
-`ADMIN_REPORT_RECIPIENTS` (same mailing list — and same SMTP2GO delivery —
-as the website's own `/api/admin/send-report`; not necessarily identical
-to `ADMIN_EMAILS`, the *access-control* list for these routes). Every
-key's usage — the same per-feature counters `GET
-/api/keys/{key_id}/usage` exposes for one key — is summed per owning
-user, so someone with three keys shows up as one row.
+Envoie par e-mail un récapitulatif par utilisateur de l'usage des clés
+API pour un mois calendaire à `ADMIN_REPORT_RECIPIENTS` (la même liste de
+diffusion — et la même livraison SMTP2GO — que le `/api/admin/send-report`
+propre au site web ; pas nécessairement identique à `ADMIN_EMAILS`, la
+liste de *contrôle d'accès* de ces routes). L'usage de chaque clé — les
+mêmes compteurs par fonctionnalité que `GET /api/keys/{key_id}/usage`
+expose pour une clé — est sommé par utilisateur propriétaire, donc
+quelqu'un avec trois clés apparaît comme une seule ligne.
 
-Body (optional):
+Corps (optionnel) :
 
 ```json
 { "period": "2026-07" }
 ```
 
-`period` is `"YYYY-MM"`, defaults to the current UTC calendar month if
-omitted, and lets you re-pull a past month on demand rather than only
-ever seeing the month in progress. Malformed value is a `400`.
+`period` est au format `"YYYY-MM"`, vaut par défaut le mois calendaire
+UTC en cours si omis, et te permet de récupérer à la demande un mois
+passé plutôt que de ne voir que le mois en cours. Une valeur mal formée
+donne un `400`.
 
 ```bash
 curl -X POST https://api.candyvoice.com/api/admin/send-api-usage-report \
@@ -324,40 +340,45 @@ curl -X POST https://api.candyvoice.com/api/admin/send-api-usage-report \
 { "ok": true, "period": "2026-08", "users": 12, "sentTo": ["jl.crebouw@candyvoice.com"] }
 ```
 
-The email itself carries an `.xlsx` attachment — one row per user with
-usage that period (email, uid, plan(s), key count, per-feature file
-counts, total), sorted by total descending. Users with zero API-key
-activity that month aren't included, so the sheet stays focused on
-actual usage rather than every signed-up account. Revoked keys' usage
-still counts — a key revoked mid-month still consumed quota while it was
-active.
+L'e-mail lui-même porte une pièce jointe `.xlsx` — une ligne par
+utilisateur avec de l'usage cette période (e-mail, uid, offre(s), nombre
+de clés, comptes de fichiers par fonctionnalité, total), triée par total
+décroissant. Les utilisateurs sans aucune activité de clé API ce mois-là
+ne sont pas inclus, pour que la feuille reste centrée sur l'usage réel
+plutôt que sur chaque compte inscrit. L'usage des clés révoquées compte
+quand même — une clé révoquée en milieu de mois a quand même consommé du
+quota pendant qu'elle était active.
 
-> **Not on a schedule yet.** This endpoint has to be triggered — nothing
-> calls it automatically once a month. Wire that up externally (a k8s
-> `CronJob` hitting this endpoint on a schedule, or any other scheduler)
-> if you want it to actually fire monthly on its own.
+> **Pas encore sur un planning.** Cet endpoint doit être déclenché — rien
+> ne l'appelle automatiquement une fois par mois. Mets ça en place en
+> externe (un `CronJob` k8s qui appelle cet endpoint sur un planning, ou
+> tout autre ordonnanceur) si tu veux que ça se déclenche vraiment tout
+> seul chaque mois.
 
-## Using a key against the processing endpoints
+## Utiliser une clé avec les endpoints de traitement
 
-Swap `Authorization: Bearer ...` for `X-API-Key`, on any of `/api/noise-filter`,
-`/api/imitation`, `/api/frame-recovery`, `/api/deepfake-detect` (not the
-`/ws/deepfake` WebSocket — that one's browser-only and stays Firebase-only).
+Remplace `Authorization: Bearer ...` par `X-API-Key`, sur n'importe lequel
+de `/api/noise-filter`, `/api/imitation`, `/api/frame-recovery`,
+`/api/deepfake-detect` (pas le WebSocket `/ws/deepfake` — celui-là est
+propre au navigateur et reste Firebase uniquement).
 
-> Sending both headers on one request isn't a supported way to combine
-> them — `X-API-Key` is tried first. If it's valid, that's what's used. If
-> it's missing/invalid and an `Authorization` bearer token is also
-> present, the request falls back to that instead of failing outright
-> (e.g. a stale test key left alongside a real browser session shouldn't
-> block a request that would otherwise succeed as a normal login). Only
-> when neither works, or `X-API-Key` was sent alone and is bad, do you get
-> `401 Invalid or revoked API key`.
+> Envoyer les deux en-têtes sur une même requête n'est pas une façon
+> supportée de les combiner — `X-API-Key` est essayé en premier. S'il est
+> valide, c'est lui qui est utilisé. S'il est manquant/invalide et qu'un
+> bearer token `Authorization` est aussi présent, la requête retombe
+> dessus plutôt que d'échouer directement (ex. une clé de test périmée
+> laissée à côté d'une vraie session navigateur ne devrait pas bloquer une
+> requête qui réussirait autrement comme une connexion normale). Ce n'est
+> que quand ni l'un ni l'autre ne fonctionne, ou que `X-API-Key` a été
+> envoyé seul et est mauvais, que tu obtiens `401 Invalid or revoked API
+> key`.
 
-### Noise filter / imitation / frame recovery — raw audio, not JSON
+### Filtre de bruit / imitation / récupération de trames — audio brut, pas du JSON
 
-These three produce a processed audio file. With a key, a successful
-response is the **raw audio bytes as the HTTP body** (`Content-Type:
-audio/wav`), not a JSON envelope — metadata rides along in response
-headers instead of JSON fields:
+Ces trois produisent un fichier audio traité. Avec une clé, une réponse
+réussie est **les octets audio bruts comme corps HTTP** (`Content-Type:
+audio/wav`), pas une enveloppe JSON — les métadonnées voyagent dans les
+en-têtes de réponse plutôt que dans des champs JSON :
 
 ```bash
 curl -X POST https://api.candyvoice.com/api/noise-filter \
@@ -376,59 +397,64 @@ X-Duration-Seconds: 18.2
 X-Files-Used: 13
 X-Max-Files: 500
 X-Plan: pro
-<...raw WAV bytes...>
+<...octets WAV bruts...>
 ```
 
-Why not JSON with the audio base64-encoded inline, like an earlier version
-of this endpoint did? Base64 adds ~33% size overhead on top of an already
-uncompressed WAV — for a full 30-second clip that pushed some responses
-into the tens-of-megabytes range, which is painful for both server memory
-and client-side JSON parsing. Raw bytes avoid that entirely and let you
-stream/save the response directly (`-o filtered.wav` above, or
-`response.arrayBuffer()` in JS).
+Pourquoi pas du JSON avec l'audio encodé en base64 en ligne, comme le
+faisait une version antérieure de cet endpoint ? Le base64 ajoute ~33% de
+surcharge de taille par-dessus un WAV déjà non compressé — pour un clip
+complet de 30 secondes, ça poussait certaines réponses dans la gamme des
+dizaines de Mo, ce qui est pénible à la fois pour la mémoire serveur et
+le parsing JSON côté client. Les octets bruts évitent ça complètement et
+te permettent de streamer/sauvegarder la réponse directement (`-o
+filtered.wav` ci-dessus, ou `response.arrayBuffer()` en JS).
 
-`/api/imitation` and `/api/frame-recovery` add their own extra header —
-`X-Voice-Model` / `X-Frame-Recovery-Factor` respectively — mirroring the
-`voice_model` / `frame_recovery_factor` extra fields those two add to the
-JSON envelope on the Firebase-session path.
+`/api/imitation` et `/api/frame-recovery` ajoutent chacun leur propre
+en-tête supplémentaire — `X-Voice-Model` / `X-Frame-Recovery-Factor`
+respectivement — reflétant les champs supplémentaires `voice_model` /
+`frame_recovery_factor` que ces deux-là ajoutent à l'enveloppe JSON sur
+le chemin session Firebase.
 
-`X-Files-Used` / `X-Max-Files` are this key's count for the current
-calendar month on this specific feature — see [Plans & limits](#plans--limits).
-There's nothing to download from `/outputs/` in this mode: the file was
-deleted from disk right after this response was built.
+`X-Files-Used` / `X-Max-Files` sont le compteur de cette clé pour le mois
+calendaire en cours sur cette fonctionnalité précise — voir [Offres et
+limites](#offres-et-limites). Il n'y a rien à télécharger depuis
+`/outputs/` dans ce mode : le fichier a été supprimé du disque juste
+après la construction de cette réponse.
 
-If quota tracking fails *after* processing already succeeded (a
-transient Firestore hiccup during commit — rare, but the file was already
-produced by that point), `X-Files-Used` comes back empty rather than a
-number, and an `X-Usage-Warning` header is added explaining that the
-count may be off. The audio itself is still returned either way; only the
-usage bookkeeping is in question.
+Si le suivi du quota échoue *après* que le traitement a déjà réussi (un
+pépin Firestore transitoire pendant la validation — rare, mais le fichier
+avait déjà été produit à ce stade), `X-Files-Used` revient vide plutôt
+qu'un nombre, et un en-tête `X-Usage-Warning` est ajouté expliquant que le
+compte peut être faussé. L'audio lui-même est quand même retourné dans
+tous les cas ; seul le suivi de l'usage est en question.
 
-**Errors still come back as JSON** (`{"error": "..."}` or a richer object
-with `stdout`/`stderr`), exactly as documented in
-[`API.md`](API.md#errors-quotas--rate-limits) — only the success response
-differs by auth method, not the failure shape.
+**Les erreurs reviennent quand même en JSON** (`{"error": "..."}` ou un
+objet plus riche avec `stdout`/`stderr`), exactement comme documenté dans
+[`API.md`](API.md#erreurs-quotas-et-limites-de-débit) — seule la réponse
+de succès de ces routes diffère selon la méthode d'auth, pas la forme des
+erreurs.
 
-### Deepfake detection — unchanged NDJSON stream
+### Détection de deepfake — flux NDJSON inchangé
 
-`/api/deepfake-detect` has no processed audio output of its own (just a
-score), so it's unaffected by the above — same streaming NDJSON shape as
-[`API.md`](API.md#post-apideepfake-detect) either way. With a key, the
-final `result` event's `files_used`/`max_files` reflect that key's
-monthly plan allowance instead of the website's lifetime cap, and it
-carries a `"plan"` field:
+`/api/deepfake-detect` n'a pas de sortie audio traitée propre (juste un
+score), donc elle n'est pas affectée par ce qui précède — même forme de
+flux NDJSON que [`API.md`](API.md#post-apideepfake-detect) dans les deux
+cas. Avec une clé, les `files_used`/`max_files` de l'événement `result`
+final reflètent l'allocation mensuelle de l'offre de cette clé plutôt que
+le plafond à vie du site, et il porte un champ `"plan"` :
 
 ```jsonl
 {"type": "result", "ok": true, "exit_code": 0, "deepfake_percent": 3.1, "threshold_percent": 50.0, "verdict": "genuine", "uid": "uid123", "duration_seconds": 12.4, "files_used": 4, "max_files": 500, "plan": "pro"}
 ```
 
-## Errors specific to keys
+## Erreurs spécifiques aux clés
 
-| Status | Meaning |
+| Statut | Signification |
 |---|---|
-| 401 | Missing, unknown, or revoked API key. |
-| 429 | Rate limit or monthly quota exceeded for this key's plan (the message says which) — each key has its own independent budget, sized to its plan, not shared with that user's Firebase-session calls or their other keys. |
-| 503 | Key verification / quota service (Firestore) temporarily unavailable — safe to retry. |
+| 401 | Clé API manquante, inconnue, ou révoquée. |
+| 429 | Limite de débit ou quota mensuel dépassé pour l'offre de cette clé (le message précise lequel) — chaque clé a son propre budget indépendant, dimensionné selon son offre, non partagé avec les appels en session Firebase de cet utilisateur ni avec ses autres clés. |
+| 503 | Service de vérification de clé / de quota (Firestore) temporairement indisponible — sûr à réessayer. |
 
-Everything else (400 bad upload, 500/504 processing failures) behaves the
-same regardless of auth method — see [`API.md`](API.md#errors-quotas--rate-limits).
+Tout le reste (upload invalide en 400, échecs de traitement en 500/504)
+se comporte pareil quelle que soit la méthode d'auth — voir
+[`API.md`](API.md#erreurs-quotas-et-limites-de-débit).

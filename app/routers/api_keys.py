@@ -20,19 +20,20 @@ async def create_my_key(
     decoded_token: dict = Depends(get_current_user),
     body: CreateApiKeyRequest | None = None,
 ):
-    """Self-service key creation: the caller authenticates the normal way
-    (Firebase ID token from the website's logged-in session) and gets back
-    a key scoped to their own uid — there's no way to request a key for
-    anyone else through this endpoint. The raw key is only ever returned
-    here; only its hash is stored, so show it to the user once and tell
-    them to save it.
+    """Création de clé en self-service : l'appelant s'authentifie de façon
+    normale (token d'ID Firebase de la session connectée du site) et
+    reçoit en retour une clé rattachée à son propre uid — il n'y a aucun
+    moyen de demander une clé pour quelqu'un d'autre via cet endpoint. La
+    clé brute n'est retournée qu'ici ; seul son hash est stocké, donc
+    montre-la à l'utilisateur une fois et dis-lui de la sauvegarder.
 
-    `plan` is client-supplied and trusted as-is for now, matching the
-    current pricing-page mockup (choose a plan, get a key) — there's no
-    payment verification behind it yet. Before this is a real paid
-    product, plan assignment needs to move behind a server-verified event
-    (e.g. a Stripe webhook after checkout), otherwise nothing stops a
-    caller from just asking for "enterprise"."""
+    `plan` est fourni par le client et pris tel quel pour l'instant, à
+    l'image de la maquette actuelle de la page tarifs (choisir une offre,
+    obtenir une clé) — il n'y a pas encore de vérification de paiement
+    derrière. Avant que ce soit un vrai produit payant, l'attribution de
+    l'offre doit passer derrière un événement vérifié côté serveur (ex. un
+    webhook Stripe après le paiement), sinon rien n'empêche un appelant de
+    simplement demander "enterprise"."""
     uid = decoded_token.get("uid")
     label = body.label if body else None
     plan = body.plan if body else config.DEFAULT_API_KEY_PLAN
@@ -53,9 +54,10 @@ async def list_my_keys(decoded_token: dict = Depends(get_current_user)):
 
 @router.get("/api/keys/{key_id}/usage")
 async def get_my_key_usage(key_id: str, decoded_token: dict = Depends(get_current_user)):
-    """Current-billing-period usage/limit per feature, plus the plan's
-    rate limit — everything an account settings page needs to render a
-    usage dashboard for one key."""
+    """Usage/limite de la période de facturation en cours par
+    fonctionnalité, plus la limite de débit de l'offre — tout ce dont une
+    page de paramètres de compte a besoin pour afficher un tableau de bord
+    d'usage pour une clé."""
     uid = decoded_token.get("uid")
     key = get_api_key_for_owner(key_id, uid)
     if not key:

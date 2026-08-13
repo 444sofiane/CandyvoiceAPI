@@ -12,10 +12,11 @@ router = APIRouter()
 
 @router.get("/outputs/{output_name}")
 async def get_output(output_name: str, token: str | None = None, authorization: str = Header(default="")):
-    """Two ways in, same as the original: a signed short-lived token in the
-    URL (what <audio src>/<a download> actually use, since they can't send
-    an Authorization header), or a bearer token whose uid matches the
-    filename's owner prefix (see build_output_path)."""
+    """Deux façons d'y accéder, comme dans l'original : un token signé à
+    courte durée de vie dans l'URL (ce qu'utilisent réellement <audio src>/
+    <a download>, puisqu'ils ne peuvent pas envoyer d'en-tête Authorization),
+    ou un bearer token dont l'uid correspond au préfixe propriétaire du nom
+    de fichier (voir build_output_path)."""
     safe_output_name = os.path.basename(output_name)
 
     authorized = verify_download_token(safe_output_name, token)
@@ -26,8 +27,8 @@ async def get_output(output_name: str, token: str | None = None, authorization: 
         authorized = safe_output_name.split("_", 1)[0] == uid
 
     if not authorized:
-        # 404, not 403 — don't confirm a file exists when it isn't
-        # accessible to this caller.
+        # 404, pas 403 — ne pas confirmer qu'un fichier existe quand il
+        # n'est pas accessible à cet appelant.
         raise HTTPException(status_code=404, detail="File not found")
 
     file_path = os.path.join(config.OUTPUT_DIR, safe_output_name)

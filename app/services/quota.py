@@ -1,24 +1,26 @@
-"""Per-feature file quota (reserve / commit / release), ported 1:1 from
-api_server.py. Each feature (noiseFilter, imitation, deepfake,
-frameRecovery) has its own independent MAX_FILES_PER_FEATURE allowance
-tracked under usage/{uid}.{feature_key}.
+"""Quota de fichiers par fonctionnalité (réserver / valider / libérer),
+porté 1:1 depuis api_server.py. Chaque fonctionnalité (noiseFilter,
+imitation, deepfake, frameRecovery) a sa propre allocation
+MAX_FILES_PER_FEATURE indépendante, suivie sous usage/{uid}.{feature_key}.
 
-NOTE on concurrency: each public function below wraps its "_impl" function
-with `firestore.transactional(...)` freshly, on every call, instead of
-decorating the impl at module import time. The google-cloud-firestore
-`@transactional` decorator returns a `Transactional` object that stores
-retry/rollback bookkeeping (current_id, retry_id) as *instance* attributes.
-If that same decorated object is shared and invoked concurrently by
-multiple in-flight requests (as happens under FastAPI, where the decorated
-function is a single module-level object), one request's retry/reset logic
-can clobber another's mid-transaction state. That's what produced:
+NOTE sur la concurrence : chaque fonction publique ci-dessous enveloppe sa
+fonction "_impl" avec `firestore.transactional(...)` à neuf, à chaque
+appel, plutôt que de décorer l'impl au moment de l'import du module. Le
+décorateur `@transactional` de google-cloud-firestore retourne un objet
+`Transactional` qui stocke le suivi retry/rollback (current_id, retry_id)
+comme attributs *d'instance*. Si ce même objet décoré est partagé et
+invoqué en parallèle par plusieurs requêtes en vol (ce qui arrive sous
+FastAPI, où la fonction décorée est un seul objet au niveau module), la
+logique de retry/reset d'une requête peut écraser l'état en cours de
+transaction d'une autre. C'est ce qui a produit :
 
     "The transaction has no transaction ID, so it cannot be rolled back."
 
-— a rollback attempted on a transaction whose _begin() never actually
-completed for that call, because a concurrent call reset the shared
-wrapper's state first. Wrapping fresh per-call gives each invocation its
-own Transactional instance, so there's no shared mutable state to race on.
+— un rollback tenté sur une transaction dont le _begin() n'a en réalité
+jamais abouti pour cet appel, parce qu'un appel concurrent avait déjà
+réinitialisé l'état du wrapper partagé. Envelopper à neuf à chaque appel
+donne à chaque invocation sa propre instance Transactional, donc il n'y a
+pas d'état mutable partagé sur lequel il pourrait y avoir une course.
 """
 from google.cloud import firestore
 
@@ -56,11 +58,12 @@ def _reserve_usage_file_impl(transaction, usage_ref, feature_key, max_files):
 
 
 def reserve_usage_file(transaction, usage_ref, feature_key, max_files):
-    """`max_files` is the caller's responsibility to supply explicitly —
-    the website's Firebase-session path passes config.MAX_FILES_PER_FEATURE
-    (a flat lifetime cap), while the API-key path (api_key_quota.py) passes
-    that key's plan allowance for the current calendar month, or None for
-    an unlimited plan."""
+    """`max_files` est de la responsabilité de l'appelant, qui doit le
+    fournir explicitement — le chemin session Firebase du site passe
+    config.MAX_FILES_PER_FEATURE (un plafond fixe à vie), tandis que le
+    chemin par clé API (api_key_quota.py) passe l'allocation de l'offre de
+    cette clé pour le mois calendaire en cours, ou None pour une offre
+    illimitée."""
     return firestore.transactional(_reserve_usage_file_impl)(transaction, usage_ref, feature_key, max_files)
 
 
@@ -99,7 +102,7 @@ def commit_reserved_file(transaction, usage_ref, feature_key):
 
 
 def release_quota_safely(firestore_client, usage_ref, feature_key, context):
-    """Best-effort release that never raises — mirrors
+    """Libération au mieux, sans garantie, qui ne lève jamais — reflète
     NoiseFilterHandler._release_quota_safely."""
     if not (firestore_client and usage_ref):
         return

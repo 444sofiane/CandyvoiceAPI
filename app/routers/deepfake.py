@@ -15,9 +15,9 @@ router = APIRouter()
 
 
 # ---------------------------------------------------------------------
-# HTTP route — kept NDJSON-over-chunked-response for backward
-# compatibility with the current frontend (same content-type, same event
-# shapes as the original BaseHTTPRequestHandler version).
+# Route HTTP — garde le NDJSON-en-réponse-chunkée pour rester compatible
+# avec le frontend actuel (même content-type, mêmes formes d'événements
+# que la version originale BaseHTTPRequestHandler).
 # ---------------------------------------------------------------------
 
 @router.post("/api/deepfake-detect")
@@ -33,10 +33,10 @@ async def deepfake_detect(
     if not file_name:
         raise HTTPException(status_code=400, detail="X-File-Name header (or file_name param) is required")
 
-    # Everything up to here can still fail with a normal HTTP status. From
-    # here on we commit to the streaming response, same as the original —
-    # any further failure has to be reported as a {"type": "error"} event
-    # inside the stream rather than an HTTP status.
+    # Tout ce qui précède peut encore échouer avec un statut HTTP normal.
+    # À partir d'ici on s'engage dans la réponse en streaming, comme
+    # l'original — tout échec ultérieur doit être signalé comme un
+    # événement {"type": "error"} dans le flux plutôt que par un statut HTTP.
     job = await asyncio.to_thread(prepare_deepfake_job, auth, raw_body, file_name)
 
     async def event_stream():
@@ -48,9 +48,9 @@ async def deepfake_detect(
                     yield (json.dumps(final_event) + "\n").encode("utf-8")
                     return
                 yield (json.dumps(event) + "\n").encode("utf-8")
-                # Cooperatively notice a client that has gone away between
-                # events (Starlette doesn't interrupt a running generator
-                # on disconnect by itself).
+                # Détecte de manière coopérative un client qui est parti
+                # entre deux événements (Starlette n'interrompt pas de
+                # lui-même un générateur en cours en cas de déconnexion).
                 if await request.is_disconnected():
                     cancel_event.set()
         finally:
@@ -64,13 +64,13 @@ async def deepfake_detect(
 
 
 # ---------------------------------------------------------------------
-# WebSocket route — the new SaaS-style path. Protocol:
+# Route WebSocket — le nouveau chemin façon SaaS. Protocole :
 #   client -> {"type": "auth", "token": "<firebase id token>"}
-#   server -> {"type": "auth_ok"}                    (or error + close)
+#   serveur -> {"type": "auth_ok"}                    (ou erreur + fermeture)
 #   client -> {"type": "start", "file_name": "clip.wav"}
-#   client -> <binary frame: raw file bytes>
-#   server -> {"type": "warning"|"progress"|"info"} ...  (0 or more)
-#   server -> {"type": "result"|"error"} ...              (exactly one, then closes)
+#   client -> <frame binaire : octets bruts du fichier>
+#   serveur -> {"type": "warning"|"progress"|"info"} ...  (0 ou plus)
+#   serveur -> {"type": "result"|"error"} ...              (exactement un, puis fermeture)
 # ---------------------------------------------------------------------
 
 WS_POLICY_VIOLATION = 4401
@@ -86,7 +86,7 @@ async def deepfake_ws(ws: WebSocket):
     await ws.accept()
     
 
-    # --- auth --------------------------------------------------------
+    # --- auth ----------------------------------------------------------
     try:
         first = await ws.receive_json()
     except Exception:
@@ -110,12 +110,12 @@ async def deepfake_ws(ws: WebSocket):
         check_rate_limit(uid)
     except RateLimitExceededError as exc:
         await ws.send_json({"type": "error", "error": str(exc)})
-        await ws.close(code=1013)  # "try again later"
+        await ws.close(code=1013)  # "réessaie plus tard"
         return
 
     await ws.send_json({"type": "auth_ok"})
 
-    # --- metadata + file upload ---------------------------------------
+    # --- métadonnées + upload du fichier --------------------------------
     try:
         start_msg = await ws.receive_json()
     except Exception:
@@ -135,11 +135,11 @@ async def deepfake_ws(ws: WebSocket):
         await ws.close(code=WS_POLICY_VIOLATION)
         return
 
-    # A WebSocket binary frame arrives as one already-buffered message —
-    # there's no streaming/early-abort option here like the HTTP routes
-    # have via request.stream(), so the best available guard is rejecting
-    # it immediately, before it's written to disk or a quota slot is
-    # reserved for it.
+    # Une frame binaire WebSocket arrive comme un seul message déjà
+    # bufferisé — il n'y a pas ici d'option de streaming/abandon anticipé
+    # comme les routes HTTP en ont via request.stream(), donc la meilleure
+    # protection disponible est de la rejeter immédiatement, avant qu'elle
+    # soit écrite sur disque ou qu'un slot de quota soit réservé pour elle.
     if len(raw_body) > config.MAX_UPLOAD_SIZE_BYTES:
         await ws.send_json({
             "type": "error",
@@ -148,8 +148,9 @@ async def deepfake_ws(ws: WebSocket):
         await ws.close(code=1009)  # 1009 = "Message Too Big"
         return
 
-    # --- prepare (upload/duration/quota/command) ------------------------
-    # WS auth is Firebase-only (see module docstring) — no API key path here.
+    # --- préparation (upload/durée/quota/commande) -----------------------
+    # L'auth WS est Firebase uniquement (voir la docstring du module) —
+    # pas de chemin par clé API ici.
     auth = AuthContext(uid=uid, auth_method="firebase")
     try:
         job = await asyncio.to_thread(prepare_deepfake_job, auth, raw_body, file_name)
@@ -159,15 +160,16 @@ async def deepfake_ws(ws: WebSocket):
         await ws.close(code=1008)
         return
 
-    # --- run + stream progress ------------------------------------------
+    # --- exécution + streaming de la progression --------------------------
     cancel_event = threading.Event()
     disconnected = False
     async for event in run_deepfake_stream(job["command"], config.SCRIPT_DIR, cancel_event=cancel_event):
         if event.get("type") == "__done__":
-            # Always run this — even post-disconnect — so the quota slot
-            # reserved for this job gets released/committed. Previously,
-            # a WebSocketDisconnect here `return`ed immediately without
-            # draining to "__done__", leaking the reservation forever.
+            # Toujours exécuté — même après déconnexion — pour que le slot
+            # de quota réservé pour ce job soit libéré/validé. Avant, un
+            # WebSocketDisconnect ici faisait un `return` immédiat sans
+            # aller jusqu'à "__done__", ce qui fuyait la réservation
+            # indéfiniment.
             final_event = await asyncio.to_thread(finalize_deepfake_result, event, job, uid)
             if not disconnected:
                 try:
@@ -182,10 +184,10 @@ async def deepfake_ws(ws: WebSocket):
         try:
             await ws.send_json(event)
         except WebSocketDisconnect:
-            # Client went away mid-stream: cancel the subprocess and keep
-            # draining the stream (without trying to send further) until
-            # "__done__" arrives, so the reservation above still gets
-            # released/committed.
+            # Le client est parti en plein flux : annule le sous-processus
+            # et continue de vider le flux (sans essayer d'envoyer quoi que
+            # ce soit d'autre) jusqu'à ce que "__done__" arrive, pour que la
+            # réservation ci-dessus soit quand même libérée/validée.
             disconnected = True
             cancel_event.set()
 

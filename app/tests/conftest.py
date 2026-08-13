@@ -1,14 +1,15 @@
-"""Shared pytest fixtures for tests that need a real Firestore transaction
-(not a mock) — quota.py's whole reason for existing is transaction
-semantics under concurrency, and mocking `firestore.transactional` closely
-enough to be trustworthy is more work and less confidence than just
-pointing the google-cloud-firestore client at the local emulator.
+"""Fixtures pytest partagées pour les tests qui ont besoin d'une vraie
+transaction Firestore (pas un mock) — toute la raison d'être de quota.py
+est la sémantique de transaction sous concurrence, et mocker
+`firestore.transactional` d'assez près pour être fiable demande plus de
+travail et donne moins de confiance que de simplement pointer le client
+google-cloud-firestore vers l'émulateur local.
 
-Requires the Firestore emulator running before pytest starts:
+Nécessite que l'émulateur Firestore tourne avant le démarrage de pytest :
 
     firebase emulators:start --only firestore
 
-See tests/README.md for full setup.
+Voir tests/README.md pour la mise en place complète.
 """
 import os
 import socket
@@ -27,9 +28,9 @@ def _emulator_reachable(host: str) -> bool:
 
 @pytest.fixture(scope="session", autouse=True)
 def _require_firestore_emulator():
-    """Skip the whole session with a clear message instead of failing with
-    a raw connection-refused error, if someone runs pytest without the
-    emulator up."""
+    """Ignore toute la session avec un message clair plutôt que d'échouer
+    avec une brute erreur de connexion refusée, si quelqu'un lance pytest
+    sans que l'émulateur ne tourne."""
     host = os.environ.setdefault("FIRESTORE_EMULATOR_HOST", "localhost:8080")
     if not _emulator_reachable(host):
         pytest.skip(
@@ -41,9 +42,10 @@ def _require_firestore_emulator():
 
 @pytest.fixture
 def db():
-    # Imported here, not at module level, so that collecting this file
-    # doesn't hard-fail in environments without google-cloud-firestore
-    # installed (e.g. a quick `pytest --collect-only` sanity check).
+    # Importé ici, pas au niveau module, pour que la collecte de ce
+    # fichier n'échoue pas durement dans les environnements sans
+    # google-cloud-firestore installé (ex. une simple vérification
+    # `pytest --collect-only`).
     from google.cloud import firestore
 
     return firestore.Client(project="candyvoice-test")
@@ -51,8 +53,9 @@ def db():
 
 @pytest.fixture
 def usage_ref(db):
-    """A fresh usage/{uid} doc per test, cleaned up afterwards regardless
-    of pass/fail so tests never leak state into each other."""
+    """Un nouveau doc usage/{uid} par test, nettoyé après coup peu importe
+    la réussite/l'échec, pour que les tests ne fuient jamais d'état entre
+    eux."""
     ref = db.collection("usage").document("test-uid")
     yield ref
     ref.delete()

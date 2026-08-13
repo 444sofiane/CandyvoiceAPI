@@ -17,21 +17,23 @@ router = APIRouter()
 
 
 def _upload_doc_files(doc, contact_id):
-    """Uploads whichever of this doc's input/output files still need
-    uploading, as Zoho Attachments on `contact_id`. Returns
-    (attachment_ids, still_pending, notes):
+    """Upload celui des fichiers input/output de ce doc qui a encore besoin
+    d'être uploadé, comme pièces jointes Zoho sur `contact_id`. Retourne
+    (attachment_ids, still_pending, notes) :
 
-    - attachment_ids: {"input": id, "output": id} — everything now
-      uploaded, including anything carried over from a previous attempt
-      (so a file already attached is never re-uploaded on retry)
-    - still_pending: True if at least one file exists on disk but its
-      upload failed for a transient reason (network/Zoho API error) — the
-      doc is left unmarked so a future call retries just that file
-    - notes: human-readable strings describing anything skipped, missing,
-      or failed, stored on the doc as `uploadError` for visibility
+    - attachment_ids : {"input": id, "output": id} — tout ce qui est
+      maintenant uploadé, y compris ce qui a été repris d'une tentative
+      précédente (pour qu'un fichier déjà attaché ne soit jamais réuploadé
+      en cas de nouvelle tentative)
+    - still_pending : True si au moins un fichier existe sur disque mais
+      que son upload a échoué pour une raison transitoire (erreur réseau/
+      API Zoho) — le doc est laissé non marqué pour qu'un futur appel
+      réessaie juste ce fichier
+    - notes : chaînes lisibles décrivant ce qui a été sauté, manquant, ou
+      qui a échoué, stockées sur le doc en `uploadError` pour la visibilité
 
-    Never raises — one doc's upload problem shouldn't abort the rest of
-    the batch.
+    Ne lève jamais d'exception — le problème d'upload d'un doc ne doit pas
+    interrompre le reste du lot.
     """
     data = doc.to_dict()
     feature = data.get("feature")
@@ -43,15 +45,15 @@ def _upload_doc_files(doc, contact_id):
 
     for kind, path_field in (("output", "outputPath"), ("input", "inputPath")):
         if kind in attachment_ids:
-            continue  # already uploaded in a previous call to this endpoint
+            continue  # déjà uploadé lors d'un appel précédent à cet endpoint
 
         path = data.get(path_field)
         if not path:
-            continue  # nothing recorded for this kind (e.g. a doc saved before inputPath existed)
+            continue  # rien d'enregistré pour ce type (ex. un doc sauvé avant que inputPath n'existe)
 
         if not os.path.exists(path):
             notes.append(f"{kind} file no longer on disk")
-            continue  # gone (TTL cleanup or otherwise) — nothing more we can do, doesn't block completion
+            continue  # disparu (nettoyage par TTL ou autre) — on n'y peut plus rien, ça ne bloque pas la complétion
 
         display_name = build_attachment_filename(feature, created_at, kind, path, original_file_name)
         try:
@@ -76,17 +78,18 @@ async def zoho_unsatisfied_webhook(
     request: Request,
     x_webhook_secret: str | None = Header(default=None, alias=config.ZOHO_UNSATISFIED_WEBHOOK_HEADER),
 ):
-    """Called by a Zoho CRM workflow's webhook action when a contact's
-    satisfaction score drops below the threshold. Body:
-    {"firebase_uid": "...", "X-Webhook-Secret": "..."}. Server-to-server,
-    gated by a shared secret.
+    """Appelé par une action webhook d'un workflow Zoho CRM quand le score
+    de satisfaction d'un contact passe sous le seuil. Corps :
+    {"firebase_uid": "...", "X-Webhook-Secret": "..."}. Serveur-à-serveur,
+    protégé par un secret partagé.
 
-    The payload doesn't identify which file/feature the survey response
-    was actually about, so rather than uploading every pending file this
-    user has ever submitted, this only uploads their single most recent
-    not-yet-uploaded, non-confidential processed file — input and output
-    (wherever each still exists on disk) — as Zoho Attachments, as the
-    closest available proxy for "the file they were just asked about".
+    Le payload n'identifie pas de quel fichier/fonctionnalité la réponse
+    au sondage parlait réellement, donc plutôt que d'uploader tous les
+    fichiers en attente jamais soumis par cet utilisateur, ceci n'uploade
+    que son unique fichier traité le plus récent, pas encore uploadé et
+    non confidentiel — input et output (là où chacun existe encore sur
+    disque) — comme pièces jointes Zoho, en tant que meilleur proxy
+    disponible pour "le fichier dont on vient de lui parler".
     """
     try:
         body = await request.json()
@@ -124,8 +127,8 @@ async def zoho_unsatisfied_webhook(
     if not docs:
         return {"ok": True, "uploaded": 0, "processed": 0, "reason": "No pending processed output for this user"}
 
-    # Zoho attaches files to a record, not to a generic file store — need
-    # the contact's Zoho record id, resolved via email
+    # Zoho attache les fichiers à une fiche, pas à un stockage de fichiers
+    # générique — il faut l'id de la fiche Zoho du contact, résolu via l'e-mail
     try:
         user = firebase_auth.get_user(firebase_uid)
     except Exception as exc:  # noqa: BLE001
@@ -150,8 +153,8 @@ async def zoho_unsatisfied_webhook(
     for doc in docs:
         data = doc.to_dict()
         if data.get("confidential"):
-            # Defensive only — get_unuploaded_outputs already filters this
-            # at the query level, so this should never actually trigger.
+            # Défensif uniquement — get_unuploaded_outputs filtre déjà ça
+            # au niveau de la requête, donc ça ne devrait jamais se déclencher.
             continue
 
         attachment_ids, still_pending, notes = _upload_doc_files(doc, contact_id)

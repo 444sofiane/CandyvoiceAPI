@@ -26,10 +26,11 @@ class SetPlanRequest(BaseModel):
 
 @router.post("/api/admin/api-keys")
 async def create_key(body: CreateApiKeyRequest, _admin: dict = Depends(require_admin)):
-    """Issues a new API key for `uid` (a server-to-server credential their
-    own application sends as X-API-Key instead of a Firebase ID token). The
-    raw key is only ever returned here — only its hash is stored, so it
-    can't be recovered later. Hand it to the user once, then it's gone."""
+    """Émet une nouvelle clé API pour `uid` (un identifiant serveur-à-serveur
+    que leur propre application envoie en X-API-Key au lieu d'un token d'ID
+    Firebase). La clé brute n'est retournée qu'ici — seul son hash est
+    stocké, donc elle ne peut pas être récupérée ensuite. Remets-la à
+    l'utilisateur une fois, puis elle a disparu."""
     uid = body.uid.strip()
     if not uid:
         raise HTTPException(status_code=400, detail="uid is required")
@@ -49,13 +50,15 @@ async def list_keys(uid: str, _admin: dict = Depends(require_admin)):
 
 @router.get("/api/admin/api-keys/all")
 async def list_every_key(limit: int = 50, cursor: str | None = None, _admin: dict = Depends(require_admin)):
-    """Every API key across every user, newest first — for an admin
-    dashboard listing keys + plans + owning uid/email. `email` is
-    batch-resolved from Firebase Auth (see api_keys.resolve_emails) and
-    is `null` if that uid no longer has a Firebase Auth account.
+    """Toutes les clés API de tous les utilisateurs, les plus récentes
+    d'abord — pour un tableau de bord admin listant clés + offres + uid/
+    e-mail du propriétaire. `email` est résolu par lot depuis Firebase Auth
+    (voir api_keys.resolve_emails) et vaut `null` si cet uid n'a plus de
+    compte Firebase Auth.
 
-    Paginated: pass the response's `next_cursor` back as `?cursor=` to
-    fetch the next page. `next_cursor: null` means there are no more."""
+    Paginé : renvoie le `next_cursor` de la réponse en `?cursor=` pour
+    récupérer la page suivante. `next_cursor: null` signifie qu'il n'y en
+    a plus."""
     limit = max(1, min(limit, 200))
     keys, next_cursor = list_all_api_keys(limit=limit, cursor=cursor)
     return {"ok": True, "keys": keys, "next_cursor": next_cursor}
@@ -63,10 +66,11 @@ async def list_every_key(limit: int = 50, cursor: str | None = None, _admin: dic
 
 @router.post("/api/admin/api-keys/{key_id}/revoke")
 async def revoke_key(key_id: str, _admin: dict = Depends(require_admin)):
-    """Unscoped revoke — an admin can revoke any user's key (e.g. a support
-    request for a lost/compromised key). Compare to the self-service
-    /api/keys/{key_id}/revoke in api_keys.py, which only lets a user revoke
-    their own."""
+    """Révocation non restreinte — un admin peut révoquer la clé de
+    n'importe quel utilisateur (ex. une demande de support pour une clé
+    perdue/compromise). À comparer avec le /api/keys/{key_id}/revoke en
+    self-service dans api_keys.py, qui ne laisse un utilisateur révoquer
+    que les siennes."""
     if not revoke_api_key(key_id):
         raise HTTPException(status_code=404, detail="API key not found")
     return {"ok": True, "key_id": key_id, "revoked": True}
@@ -74,9 +78,9 @@ async def revoke_key(key_id: str, _admin: dict = Depends(require_admin)):
 
 @router.post("/api/admin/api-keys/{key_id}/plan")
 async def change_key_plan(key_id: str, body: SetPlanRequest, _admin: dict = Depends(require_admin)):
-    """Staff-only plan change — for a manual Enterprise ("sur mesure")
-    negotiation, or a support-handled upgrade/downgrade outside the
-    self-service flow."""
+    """Changement d'offre réservé au staff — pour une négociation Enterprise
+    ("sur mesure") manuelle, ou un changement d'offre géré par le support
+    en dehors du parcours self-service."""
     try:
         changed = set_api_key_plan(key_id, body.plan)
     except ValueError as exc:

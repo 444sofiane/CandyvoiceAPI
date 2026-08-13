@@ -1,5 +1,5 @@
-"""Firebase Admin bootstrap, ID-token verification, and Firestore client
-access. Ported 1:1 from api_server.py."""
+"""Amorçage de Firebase Admin, vérification du token d'ID, et accès au
+client Firestore. Porté 1:1 depuis api_server.py."""
 import firebase_admin
 from firebase_admin import credentials, firestore as admin_firestore
 from google.auth.transport import requests as google_requests

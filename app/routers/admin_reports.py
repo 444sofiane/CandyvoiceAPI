@@ -15,26 +15,26 @@ _VALID_RANGES = {"day", "week", "3months", "6months"}
 
 class SendReportRequest(BaseModel):
     range: str
-    # Optional "YYYY-MM-DD" — defaults to today (UTC) if omitted. Lets an
-    # admin pull a report for a specific past date instead of always "as of
-    # now".
+    # "YYYY-MM-DD" optionnel — par défaut aujourd'hui (UTC) si omis. Permet
+    # à un admin de récupérer un rapport pour une date passée précise plutôt
+    # que toujours "à l'instant présent".
     reference_date: str | None = None
 
 
 class SendApiUsageReportRequest(BaseModel):
-    # Optional "YYYY-MM" — defaults to the current UTC calendar month if
-    # omitted. Lets an admin re-pull a past month's report on demand,
-    # rather than only ever seeing the month in progress.
+    # "YYYY-MM" optionnel — par défaut le mois calendaire UTC en cours si
+    # omis. Permet à un admin de récupérer à la demande le rapport d'un
+    # mois passé, plutôt que de ne voir que le mois en cours.
     period: str | None = None
 
 
 def require_admin(decoded_token: dict = Depends(get_current_user)) -> dict:
-    """Layered on top of get_current_user: same bearer-token verification
-    every other route uses, plus an allow-list check. This is the actual
-    access control for /api/admin/* — the client-side check in
-    admin-reports.js is UX only and can't be trusted on its own, since
-    anyone can call this endpoint directly with a valid-but-non-admin
-    token."""
+    """Superposé à get_current_user : même vérification de bearer token que
+    toutes les autres routes, plus une vérification par liste d'autorisation.
+    C'est le véritable contrôle d'accès pour /api/admin/* — la vérification
+    côté client dans admin-reports.js n'est que pour le confort d'usage et
+    ne peut pas être fiable seule, puisque n'importe qui peut appeler cet
+    endpoint directement avec un token valide mais non-admin."""
     email = (decoded_token.get("email") or "").strip().lower()
     if not email or email not in config.ADMIN_EMAILS:
         raise HTTPException(status_code=403, detail="Not authorized to access admin reports")
@@ -60,9 +60,10 @@ async def send_report(body: SendReportRequest, _admin: dict = Depends(require_ad
         report = build_report(body.range, reference_date)
         send_report_email(report)
     except RuntimeError as exc:
-        # Config problems (missing SMTP2GO creds, empty recipient list) —
-        # surface as a clear 500 rather than a generic one, since these are
-        # almost always a one-time setup issue an admin can fix themselves.
+        # Problèmes de config (identifiants SMTP2GO manquants, liste de
+        # destinataires vide) — remontés en 500 clair plutôt qu'en erreur
+        # générique, puisque c'est presque toujours un problème de
+        # configuration ponctuel qu'un admin peut corriger lui-même.
         raise HTTPException(status_code=500, detail=str(exc))
     except Exception as exc:  # noqa: BLE001
         print(f"send_report failed: {exc}")
@@ -77,10 +78,11 @@ async def send_report(body: SendReportRequest, _admin: dict = Depends(require_ad
 
 @router.post("/api/admin/send-api-usage-report")
 async def send_api_usage_report(body: SendApiUsageReportRequest, _admin: dict = Depends(require_admin)):
-    """Emails a per-user rollup of API-key usage for one calendar month —
-    every key's usage (the same data GET /api/keys/{key_id}/usage exposes
-    per-key) summed per user, as an .xlsx attachment. See
-    api_usage_report.py for the aggregation itself."""
+    """Envoie par e-mail un récapitulatif par utilisateur de l'usage des
+    clés API pour un mois calendaire — l'usage de chaque clé (les mêmes
+    données que GET /api/keys/{key_id}/usage expose par clé) sommé par
+    utilisateur, en pièce jointe .xlsx. Voir api_usage_report.py pour
+    l'agrégation elle-même."""
     period = None
     if body.period:
         try:
@@ -92,9 +94,10 @@ async def send_api_usage_report(body: SendApiUsageReportRequest, _admin: dict = 
         report = build_api_usage_report(period)
         send_api_usage_report_email(report)
     except RuntimeError as exc:
-        # Config problems (missing SMTP2GO creds, empty recipient list) —
-        # surface as a clear 500 rather than a generic one, since these are
-        # almost always a one-time setup issue an admin can fix themselves.
+        # Problèmes de config (identifiants SMTP2GO manquants, liste de
+        # destinataires vide) — remontés en 500 clair plutôt qu'en erreur
+        # générique, puisque c'est presque toujours un problème de
+        # configuration ponctuel qu'un admin peut corriger lui-même.
         raise HTTPException(status_code=500, detail=str(exc))
     except Exception as exc:  # noqa: BLE001
         print(f"send_api_usage_report failed: {exc}")

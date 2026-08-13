@@ -1,5 +1,5 @@
-"""Upload validation/saving and audio-duration helpers, ported 1:1 from
-api_server.py."""
+"""Helpers de validation/sauvegarde d'upload et de durée audio, portés
+1:1 depuis api_server.py."""
 import os
 import uuid
 import wave
@@ -11,13 +11,14 @@ from app import config
 
 
 async def read_limited_upload(request, max_bytes=None):
-    """Reads an HTTP request body incrementally via `request.stream()`,
-    aborting as soon as it exceeds `max_bytes` — unlike a plain
-    `await request.body()`, which buffers the entire payload in memory
-    (and only then lets the caller find out it was too big), this rejects
-    an oversized upload before it ever gets written to disk.
+    """Lit un corps de requête HTTP progressivement via `request.stream()`,
+    en abandonnant dès qu'il dépasse `max_bytes` — contrairement à un
+    simple `await request.body()`, qui bufferise tout le payload en
+    mémoire (et ne laisse l'appelant découvrir qu'il était trop gros
+    qu'ensuite), ceci rejette un upload surdimensionné avant même qu'il
+    soit écrit sur disque.
 
-    Raises HTTPException(413) if the payload is too large.
+    Lève HTTPException(413) si le payload est trop gros.
     """
     max_bytes = config.MAX_UPLOAD_SIZE_BYTES if max_bytes is None else max_bytes
     chunks = []
@@ -34,9 +35,10 @@ async def read_limited_upload(request, max_bytes=None):
 
 
 def looks_like_audio(payload):
-    """Sniffs the actual file content (magic bytes) rather than trusting the
-    client-supplied filename or Content-Type, either of which can be
-    spoofed by anyone calling the API directly."""
+    """Renifle le contenu réel du fichier (magic bytes) plutôt que de faire
+    confiance au nom de fichier ou au Content-Type fournis par le client,
+    tous deux pouvant être falsifiés par quiconque appelle l'API
+    directement."""
     kind = filetype.guess(payload)
     if kind is None:
         return False
@@ -49,8 +51,9 @@ def save_uploaded_file(payload, destination):
 
 
 def save_upload(uid, raw_body, file_name):
-    """Validates `raw_body` looks like audio and saves it under UPLOAD_DIR.
-    Returns the saved path, or raises ValueError with a user-facing message."""
+    """Valide que `raw_body` ressemble à de l'audio et le sauvegarde sous
+    UPLOAD_DIR. Retourne le chemin sauvegardé, ou lève ValueError avec un
+    message destiné à l'utilisateur."""
     if not raw_body:
         raise ValueError("No file data received")
     if not looks_like_audio(raw_body):

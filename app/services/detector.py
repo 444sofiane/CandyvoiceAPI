@@ -1,9 +1,9 @@
-"""Windows executable command builders, output parsing regexes, and the
-streaming subprocess wrapper (_DetectorProcess). Ported 1:1 from
-api_server.py — this is the part of the app that is inherently
-synchronous/blocking (it shells out to a Windows .exe), so callers in the
-FastAPI routers run it via asyncio.to_thread rather than rewriting it as
-async code.
+"""Constructeurs de commandes pour l'exécutable Windows, regex de parsing
+de la sortie, et le wrapper de sous-processus en streaming
+(_DetectorProcess). Porté 1:1 depuis api_server.py — c'est la partie de
+l'app qui est intrinsèquement synchrone/bloquante (elle exécute un .exe
+Windows en sous-processus), donc les appelants dans les routers FastAPI
+l'exécutent via asyncio.to_thread plutôt que de la réécrire en code async.
 """
 import fcntl
 import os
@@ -17,19 +17,20 @@ from app import config
 
 try:
     from winpty import PtyProcess as _PtyProcess
-except ImportError:  # pragma: no cover - pywinpty is an optional, Windows-only dep
+except ImportError:  # pragma: no cover - pywinpty est une dépendance optionnelle, Windows uniquement
     _PtyProcess = None
 
 try:
     import pty as _pty_module
-except ImportError:  # pragma: no cover - pty is POSIX-only, no-op on Windows
+except ImportError:  # pragma: no cover - pty est POSIX uniquement, no-op sur Windows
     _pty_module = None
 
-# Matches the winpty dimensions below (50 rows, 400 cols) — without this the
-# pty defaults to 80 columns and the kernel hard-wraps any line the detector
-# prints past column 80, splitting single progress messages across two
-# reads (e.g. "...instantané : 0%" / ", deep fake moyen : 0%") and breaking
-# the single-line progress/header regexes.
+# Correspond aux dimensions winpty ci-dessous (50 lignes, 400 colonnes) —
+# sans ça le pty revient par défaut à 80 colonnes et le noyau coupe
+# durement toute ligne que le détecteur affiche au-delà de la colonne 80,
+# scindant des messages de progression uniques en deux lectures (ex.
+# "...instantané : 0%" / ", deep fake moyen : 0%") et cassant les regex
+# de progression/en-tête en une seule ligne.
 _PTY_ROWS, _PTY_COLS = 50, 400
 
 
@@ -48,16 +49,18 @@ DEEPFAKE_HEADER_RE = re.compile(
 
 
 def resolve_executable():
-    """Returns the command *prefix* used to invoke the detector — a list so
-    that a non-Windows host can prepend a `wine` launcher transparently.
+    """Retourne le *préfixe* de commande utilisé pour invoquer le
+    détecteur — une liste pour qu'un hôte non-Windows puisse préfixer un
+    lanceur `wine` de façon transparente.
 
-    On Windows (or once the native Linux binary replaces imitation.exe),
-    this is just `[executable]`, exactly as before. On Linux, as long as
-    `wine` is on PATH (see docker/Dockerfile.api), it becomes
-    `["wine", executable]` — this is a stopgap so the current .exe can run
-    inside a Linux container/K8s pod while the native binary isn't ready
-    yet. Nothing about the callers below changes when that binary lands:
-    just drop the `wine` branch here.
+    Sur Windows (ou une fois que le binaire Linux natif remplace
+    imitation.exe), c'est juste `[executable]`, exactement comme avant.
+    Sur Linux, tant que `wine` est dans le PATH (voir
+    docker/Dockerfile.api), ça devient `["wine", executable]` — c'est un
+    pis-aller pour que le .exe actuel puisse tourner dans un conteneur
+    Linux/pod K8s tant que le binaire natif n'est pas prêt. Rien ne change
+    du côté des appelants ci-dessous quand ce binaire arrivera : il suffit
+    de supprimer la branche `wine` ici.
     """
     candidates = [os.path.join(config.SCRIPT_DIR, "imitation.exe")]
     for candidate in candidates:
@@ -136,12 +139,13 @@ def _decode_detector_bytes(raw):
 
 
 class _DetectorProcess:
-    """Runs the detector command and yields its output lines as they arrive.
-    Ported from api_server.py's ConPTY-based version, plus a POSIX-pty
-    fallback for Linux (see the two try/except imports above) so live
-    progress also works when the exe runs under Wine instead of native
-    Windows. This class is still blocking/synchronous by design; run it
-    inside asyncio.to_thread from the async routers."""
+    """Exécute la commande du détecteur et produit ses lignes de sortie au
+    fur et à mesure qu'elles arrivent. Porté depuis la version basée sur
+    ConPTY de api_server.py, plus un repli POSIX-pty pour Linux (voir les
+    deux imports try/except ci-dessus) pour que la progression en direct
+    fonctionne aussi quand l'exe tourne sous Wine plutôt que sous Windows
+    natif. Cette classe est encore bloquante/synchrone par conception ;
+    exécute-la dans asyncio.to_thread depuis les routers async."""
 
     def __init__(self, command, cwd):
         self._pty = None
@@ -152,10 +156,11 @@ class _DetectorProcess:
             self._pty = _PtyProcess.spawn(command, cwd=cwd, dimensions=(_PTY_ROWS, _PTY_COLS))
             self.used_pty = True
         elif _pty_module is not None:
-            # No ConPTY here (pywinpty only wraps the Windows API), but a
-            # plain POSIX pty still makes Wine treat stdout as a terminal
-            # instead of a pipe, which is what actually controls whether the
-            # exe flushes progress line-by-line or buffers it all until exit.
+            # Pas de ConPTY ici (pywinpty ne fait qu'envelopper l'API
+            # Windows), mais un simple pty POSIX fait quand même que Wine
+            # traite stdout comme un terminal plutôt que comme un pipe, ce
+            # qui est ce qui contrôle réellement si l'exe vide sa
+            # progression ligne par ligne ou la bufferise jusqu'à la fin.
             master_fd, slave_fd = _pty_module.openpty()
             winsize = struct.pack("HHHH", _PTY_ROWS, _PTY_COLS, 0, 0)
             fcntl.ioctl(slave_fd, termios.TIOCSWINSZ, winsize)
@@ -209,8 +214,9 @@ class _DetectorProcess:
                 try:
                     chunk = os.read(self._posix_pty_fd, 4096)
                 except OSError:
-                    # EIO once the slave side is gone and the child has
-                    # exited — the normal POSIX pty EOF signal.
+                    # EIO une fois que le côté slave a disparu et que
+                    # l'enfant s'est terminé — le signal EOF normal du
+                    # pty POSIX.
                     chunk = b""
                 if not chunk:
                     break
@@ -249,7 +255,7 @@ class _DetectorProcess:
         if self._pty is not None:
             try:
                 self._pty.terminate(force=True)
-            except Exception:  # noqa: BLE001 - best-effort kill on timeout
+            except Exception:  # noqa: BLE001 - kill au mieux en cas de timeout
                 pass
         elif self._popen is not None:
             self._popen.kill()
@@ -258,12 +264,13 @@ class _DetectorProcess:
         if self._pty is not None:
             try:
                 self._pty.wait()
-            except Exception:  # noqa: BLE001 - already dead / backend quirk
+            except Exception:  # noqa: BLE001 - déjà mort / bizarrerie du backend
                 pass
         elif self._popen is not None:
             self._popen.wait()
-        # Defensive: if iter_lines() was abandoned mid-loop (e.g. cancelled
-        # before EOF), it never reached its own os.close() cleanup.
+        # Défensif : si iter_lines() a été abandonné en cours de boucle
+        # (ex. annulé avant EOF), il n'a jamais atteint son propre nettoyage
+        # par os.close().
         if self._posix_pty_fd is not None:
             try:
                 os.close(self._posix_pty_fd)
@@ -278,6 +285,7 @@ class _DetectorProcess:
         return self._popen.returncode
 
     def clean_line(self, line):
-        """Strips colour codes and cursor/erase/title control sequences so
-        the progress regexes only see plain text."""
+        """Retire les codes couleur et les séquences de contrôle
+        curseur/effacement/titre pour que les regex de progression ne
+        voient que du texte brut."""
         return OSC_ESCAPE_RE.sub("", ANSI_ESCAPE_RE.sub("", line))
