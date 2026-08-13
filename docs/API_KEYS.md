@@ -343,6 +343,15 @@ Swap `Authorization: Bearer ...` for `X-API-Key`, on any of `/api/noise-filter`,
 `/api/imitation`, `/api/frame-recovery`, `/api/deepfake-detect` (not the
 `/ws/deepfake` WebSocket — that one's browser-only and stays Firebase-only).
 
+> Sending both headers on one request isn't a supported way to combine
+> them — `X-API-Key` is tried first. If it's valid, that's what's used. If
+> it's missing/invalid and an `Authorization` bearer token is also
+> present, the request falls back to that instead of failing outright
+> (e.g. a stale test key left alongside a real browser session shouldn't
+> block a request that would otherwise succeed as a normal login). Only
+> when neither works, or `X-API-Key` was sent alone and is bad, do you get
+> `401 Invalid or revoked API key`.
+
 ### Noise filter / imitation / frame recovery — raw audio, not JSON
 
 These three produce a processed audio file. With a key, a successful
@@ -387,6 +396,13 @@ JSON envelope on the Firebase-session path.
 calendar month on this specific feature — see [Plans & limits](#plans--limits).
 There's nothing to download from `/outputs/` in this mode: the file was
 deleted from disk right after this response was built.
+
+If quota tracking fails *after* processing already succeeded (a
+transient Firestore hiccup during commit — rare, but the file was already
+produced by that point), `X-Files-Used` comes back empty rather than a
+number, and an `X-Usage-Warning` header is added explaining that the
+count may be off. The audio itself is still returned either way; only the
+usage bookkeeping is in question.
 
 **Errors still come back as JSON** (`{"error": "..."}` or a richer object
 with `stdout`/`stderr`), exactly as documented in
