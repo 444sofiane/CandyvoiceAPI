@@ -34,13 +34,13 @@ l'usage compte quand même dans l'offre de cette clé.
 
 ## Offres et limites
 
-Choisie à la création de la clé (voir `POST /api/keys` plus bas) et
-affichée sur la page tarifs. Les chiffres sont les valeurs par défaut
+Choisie à la création de la clé (voir `POST /api/keys` plus bas, dont la
+réponse ne renvoie que l'offre choisie, pas ses limites) et affichée sur
+la page tarifs. Les chiffres ci-dessous sont les valeurs par défaut
 provisoires actuelles, pas un contrat stable — traite les champs
-`maxSessionSeconds`/`rate_limit` retournés par l'API elle-même (réponse
-de création, [endpoint d'usage](#get-apikeyskey_idusage)) comme la source
-de vérité, de la même façon qu'`API.md` te le dit déjà pour les limites
-de la session Firebase.
+`maxSessionSeconds`/`rate_limit` retournés par l'[endpoint
+d'usage](#get-apikeyskey_idusage) comme la source de vérité, de la même
+façon qu'`API.md` te le dit déjà pour les limites de la session Firebase.
 
 | Offre | Budget / session / outil | Limite de débit |
 |---|---|---|
