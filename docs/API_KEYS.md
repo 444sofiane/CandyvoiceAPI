@@ -21,7 +21,7 @@ comportement du traitement, pas seulement la façon dont tu t'authentifies :
 
 | | Session Firebase | Clé API |
 |---|---|---|
-| Quota (`files_used`/`max_files`) | Plafond fixe à vie (10 fichiers/fonctionnalité, pas de réinitialisation) | **Par clé, par mois calendaire, par offre** — voir [Offres et limites](#offres-et-limites) |
+| Quota | Plafond fixe à vie, compté au fichier (10 fichiers/fonctionnalité, pas de réinitialisation) | **Budget de secondes par session et par fonctionnalité, selon l'offre** — pas de comptage par fichier ni par mois. Voir [Offres et limites](#offres-et-limites) |
 | Limite de débit | 5 req/60s, partagée entre tous tes appels en session Firebase | Par clé, par offre (5–100 req/60s) — voir [Offres et limites](#offres-et-limites) |
 | Forme de la réponse | Enveloppe JSON, lien de téléchargement `output_url` (fichier gardé ~1h) | **Octets audio bruts comme corps de réponse** (`audio/wav`), métadonnées dans les en-têtes ; aucun fichier gardé sur le serveur — voir [plus bas](#utiliser-une-clé-avec-les-endpoints-de-traitement) |
 | Historique des sorties traitées / synchro Zoho | Sauvegardé | **Entièrement sauté** — rien n'est persisté ni synchronisé |
@@ -37,22 +37,40 @@ l'usage compte quand même dans l'offre de cette clé.
 Choisie à la création de la clé (voir `POST /api/keys` plus bas) et
 affichée sur la page tarifs. Les chiffres sont les valeurs par défaut
 provisoires actuelles, pas un contrat stable — traite les champs
-`limit`/`rate_limit` retournés par l'API elle-même (réponse de création,
-[endpoint d'usage](#get-apikeyskey_idusage)) comme la source de vérité, de
-la même façon qu'`API.md` te le dit déjà pour les limites de la session
-Firebase.
+`maxSessionSeconds`/`rate_limit` retournés par l'API elle-même (réponse
+de création, [endpoint d'usage](#get-apikeyskey_idusage)) comme la source
+de vérité, de la même façon qu'`API.md` te le dit déjà pour les limites
+de la session Firebase.
 
-| Offre | Fichiers / mois / outil | Limite de débit |
+| Offre | Budget / session / outil | Limite de débit |
 |---|---|---|
-| `starter` | 50 | 5 req/60s |
-| `pro` | 500 | 20 req/60s |
-| `enterprise` | Illimité (limites personnalisées : contacte-nous) | 100 req/60s |
+| `starter` | 60s | 5 req/60s |
+| `pro` | 3 min | 20 req/60s |
+| `enterprise` | 20 min (limites personnalisées : contacte-nous) | 100 req/60s |
 
-"Par outil" signifie que chaque endpoint de traitement (filtre de bruit,
-imitation, récupération de trames, détection de deepfake) a sa propre
-allocation mensuelle indépendante — épuiser le filtre de bruit ne touche
-pas ton allocation d'imitation. L'usage revient à 0 au début de chaque
-mois calendaire (UTC), par clé.
+Aucune des quatre fonctionnalités (filtre de bruit, imitation,
+récupération de trames, détection de deepfake) n'est comptée au fichier
+ni au mois avec une clé API — chacune a son propre budget de secondes,
+appliqué par **session**, indépendant des trois autres (épuiser le
+filtre de bruit ne touche pas ton budget d'imitation). Une "session" est :
+
+- **un seul clip**, pour `/api/noise-filter`, `/api/imitation`,
+  `/api/frame-recovery`, et `/api/deepfake-detect` — ces quatre endpoints
+  sont one-shot, donc le clip peut faire jusqu'au budget entier de
+  l'offre en une fois (ex. jusqu'à 3 minutes sur `pro`, pas juste 30s —
+  il n'y a plus de plafond fixe de 30s pour ces chemins avec une clé
+  API) ;
+- **une connexion WebSocket entière**, pour `/ws/deepfake` — seul
+  endroit de l'API où une session peut couvrir plusieurs chunks envoyés
+  à la suite, avec un budget qui se cumule sur toute la connexion ; voir
+  [plus bas](#websocket-wsdeepfake-avec-une-clé--sessions-multi-chunks).
+
+Le budget se réinitialise à chaque nouvelle session (nouvelle requête
+HTTP, ou nouvelle connexion WebSocket) — **pas** chaque mois. L'usage
+cumulé est quand même enregistré chaque mois à titre indicatif (visible
+dans [l'endpoint d'usage](#get-apikeyskey_idusage) et le rapport admin
+mensuel), mais rien n'y est appliqué — c'est toujours le budget par
+session qui bloque une requête, jamais un total mensuel.
 
 > **Frontière de confiance aujourd'hui :** `plan` sur `POST /api/keys` est
 > actuellement ce que le client envoie — il n'y a pas encore de
@@ -168,18 +186,27 @@ curl https://api.candyvoice.com/api/keys/3f9c2a...e01b/usage \
   "revoked": false,
   "period": "2026-08",
   "usage": {
-    "noiseFilter": { "filesUsed": 12, "limit": 500 },
-    "imitation": { "filesUsed": 0, "limit": 500 },
-    "deepfake": { "filesUsed": 3, "limit": 500 },
-    "frameRecovery": { "filesUsed": 0, "limit": 500 }
+    "noiseFilter": { "secondsUsed": 340, "maxSessionSeconds": 180 },
+    "imitation": { "secondsUsed": 0, "maxSessionSeconds": 180 },
+    "frameRecovery": { "secondsUsed": 0, "maxSessionSeconds": 180 },
+    "deepfake": { "secondsUsed": 812, "maxSessionSeconds": 180 }
   },
   "rate_limit": { "max_requests": 20, "window_seconds": 60 }
 }
 ```
 
-`limit` vaut `null` pour une offre illimitée (`enterprise`). `period` est
-le mois calendaire UTC en cours (`YYYY-MM`) — l'usage d'une période passée
-n'est pas exposé par cet endpoint aujourd'hui, seulement celui en cours.
+`period` est le mois calendaire UTC en cours (`YYYY-MM`) — l'usage d'une
+période passée n'est pas exposé par cet endpoint aujourd'hui, seulement
+celui en cours.
+
+Les quatre fonctionnalités ont la même forme : `secondsUsed` est le cumul
+purement indicatif de toutes les sessions ce mois-ci (pas un compteur qui
+bloque quoi que ce soit — il peut légitimement dépasser
+`maxSessionSeconds`, ex. `340` ci-dessus sur un budget de `180`, puisque
+c'est la somme de plusieurs sessions distinctes), et `maxSessionSeconds`
+est le budget appliqué à **chaque** session — pas un plafond mensuel. Un
+gros `secondsUsed` ne rapproche donc pas la clé d'une limite ; c'est
+juste le total affiché pour visibilité/facturation.
 
 ### `POST /api/keys/{key_id}/revoke`
 
@@ -342,12 +369,15 @@ curl -X POST https://api.candyvoice.com/api/admin/send-api-usage-report \
 
 L'e-mail lui-même porte une pièce jointe `.xlsx` — une ligne par
 utilisateur avec de l'usage cette période (e-mail, uid, offre(s), nombre
-de clés, comptes de fichiers par fonctionnalité, total), triée par total
-décroissant. Les utilisateurs sans aucune activité de clé API ce mois-là
-ne sont pas inclus, pour que la feuille reste centrée sur l'usage réel
-plutôt que sur chaque compte inscrit. L'usage des clés révoquées compte
-quand même — une clé révoquée en milieu de mois a quand même consommé du
-quota pendant qu'elle était active.
+de clés, une colonne de secondes traitées par fonctionnalité, et un total
+en secondes), triée par usage décroissant. Les utilisateurs sans aucune
+activité de clé API ce mois-là ne sont pas inclus, pour que la feuille
+reste centrée sur l'usage réel plutôt que sur chaque compte inscrit.
+L'usage des clés révoquées compte quand même — une clé révoquée en milieu
+de mois a quand même consommé du budget pendant qu'elle était active. Ces
+secondes sont purement indicatives (voir [Offres et
+limites](#offres-et-limites)) — le budget qui bloque réellement une
+requête est appliqué par session, pas récupérable depuis ce total mensuel.
 
 > **Pas encore sur un planning.** Cet endpoint doit être déclenché — rien
 > ne l'appelle automatiquement une fois par mois. Mets ça en place en
@@ -360,7 +390,7 @@ quota pendant qu'elle était active.
 Remplace `Authorization: Bearer ...` par `X-API-Key`, sur n'importe lequel
 de `/api/noise-filter`, `/api/imitation`, `/api/frame-recovery`,
 `/api/deepfake-detect`. Le WebSocket `/ws/deepfake` accepte aussi une clé
-API — voir [plus bas](#websocket-wsdeepfake-avec-une-clé) — mais sa
+API — voir [plus bas](#websocket-wsdeepfake-avec-une-clé--sessions-multi-chunks) — mais sa
 mécanique d'auth diffère un peu puisque ce n'est pas un en-tête.
 
 > Envoyer les deux en-têtes sur une même requête n'est pas une façon
@@ -395,8 +425,7 @@ Content-Type: audio/wav
 X-Exit-Code: 0
 X-Uid: uid123
 X-Duration-Seconds: 18.2
-X-Files-Used: 13
-X-Max-Files: 500
+X-Max-Session-Seconds: 180
 X-Plan: pro
 <...octets WAV bruts...>
 ```
@@ -416,18 +445,20 @@ respectivement — reflétant les champs supplémentaires `voice_model` /
 `frame_recovery_factor` que ces deux-là ajoutent à l'enveloppe JSON sur
 le chemin session Firebase.
 
-`X-Files-Used` / `X-Max-Files` sont le compteur de cette clé pour le mois
-calendaire en cours sur cette fonctionnalité précise — voir [Offres et
-limites](#offres-et-limites). Il n'y a rien à télécharger depuis
+`X-Max-Session-Seconds` est le budget de cette clé pour cette
+fonctionnalité (voir [Offres et limites](#offres-et-limites)) — puisque
+chacun de ces trois appels est one-shot, `X-Duration-Seconds` (la durée
+du clip lui-même) *est* déjà l'usage de cette session ; il n'y a pas de
+compteur "used" séparé à renvoyer. Il n'y a rien à télécharger depuis
 `/outputs/` dans ce mode : le fichier a été supprimé du disque juste
 après la construction de cette réponse.
 
-Si le suivi du quota échoue *après* que le traitement a déjà réussi (un
-pépin Firestore transitoire pendant la validation — rare, mais le fichier
-avait déjà été produit à ce stade), `X-Files-Used` revient vide plutôt
-qu'un nombre, et un en-tête `X-Usage-Warning` est ajouté expliquant que le
-compte peut être faussé. L'audio lui-même est quand même retourné dans
-tous les cas ; seul le suivi de l'usage est en question.
+Le journalement du total mensuel indicatif (voir [Offres et
+limites](#offres-et-limites)) se fait après coup et n'affecte jamais la
+réponse — s'il échoue (un pépin Firestore transitoire), c'est
+silencieusement loggé côté serveur, sans en-tête d'avertissement côté
+client : l'audio a déjà été traité avec succès et ce total n'est de toute
+façon jamais ce qui bloque une requête.
 
 **Les erreurs reviennent quand même en JSON** (`{"error": "..."}` ou un
 objet plus riche avec `stdout`/`stderr`), exactement comme documenté dans
@@ -435,20 +466,23 @@ objet plus riche avec `stdout`/`stderr`), exactement comme documenté dans
 de succès de ces routes diffère selon la méthode d'auth, pas la forme des
 erreurs.
 
-### Détection de deepfake — flux NDJSON inchangé
+### Détection de deepfake (HTTP) — flux NDJSON, même budget par session
 
 `/api/deepfake-detect` n'a pas de sortie audio traitée propre (juste un
-score), donc elle n'est pas affectée par ce qui précède — même forme de
-flux NDJSON que [`API.md`](API.md#post-apideepfake-detect) dans les deux
-cas. Avec une clé, les `files_used`/`max_files` de l'événement `result`
-final reflètent l'allocation mensuelle de l'offre de cette clé plutôt que
-le plafond à vie du site, et il porte un champ `"plan"` :
+score), donc la forme du flux NDJSON reste celle documentée dans
+[`API.md`](API.md#post-apideepfake-detect) — JSON, pas de réponse binaire
+comme les trois endpoints ci-dessus. Le quota suit la même logique
+qu'eux : un appel HTTP one-shot est traité comme **une session d'un seul
+clip** (voir [Offres et limites](#offres-et-limites)).
+
+L'événement `result` final n'a plus `files_used`/`max_files` (toujours
+`null` avec une clé) mais `plan` et `max_session_seconds` :
 
 ```jsonl
-{"type": "result", "ok": true, "exit_code": 0, "deepfake_percent": 3.1, "threshold_percent": 50.0, "verdict": "genuine", "uid": "uid123", "duration_seconds": 12.4, "files_used": 4, "max_files": 500, "plan": "pro"}
+{"type": "result", "ok": true, "exit_code": 0, "deepfake_percent": 3.1, "threshold_percent": 50.0, "verdict": "genuine", "uid": "uid123", "duration_seconds": 12.4, "files_used": null, "max_files": null, "plan": "pro", "max_session_seconds": 180}
 ```
 
-### WebSocket /ws/deepfake avec une clé
+### WebSocket /ws/deepfake avec une clé — sessions multi-chunks
 
 Contrairement aux quatre endpoints HTTP ci-dessus, le WebSocket ne prend
 pas de clé via un en-tête — la connexion elle-même n'a pas de "en-têtes
@@ -460,11 +494,35 @@ envoie `api_key` au lieu de `token` sur le tout premier message,
 { "type": "auth", "api_key": "cvk_wK8h2s9F3n...Qz" }
 ```
 
-Le reste du protocole est identique à celui documenté dans `API.md` —
-`auth_ok`, puis `start`, puis la frame binaire, puis les événements
-`progress`/`result`. Le `result` final se comporte comme celui de la
-version HTTP avec une clé : `files_used`/`max_files` reflètent l'offre de
-la clé et un champ `"plan"` est ajouté.
+C'est le seul endroit de l'API où une "session" couvre plus qu'une seule
+requête. Une fois authentifiée par clé API, la connexion **reste ouverte
+après un `result`** et accepte un nouveau cycle `start` → frame binaire →
+`progress`/`result`, autant de fois que le budget de la session (voir
+[Offres et limites](#offres-et-limites)) n'est pas épuisé — c'est
+exactement le scénario "détection en direct pendant un appel" : découpe
+l'audio du call en clips au fil de l'eau et envoie-les l'un après
+l'autre sur la même connexion, sans ré-authentifier à chaque fois.
+
+```json
+{ "type": "result", "ok": true, "deepfake_percent": 2.0, "verdict": "genuine", "duration_seconds": 24.0, "plan": "pro", "max_session_seconds": 180, "session_seconds_used": 24.0 }
+```
+
+`session_seconds_used` est le cumul de tous les chunks réussis de cette
+connexion jusqu'ici (pas juste ce chunk) — surveille-le côté client pour
+savoir combien de budget il reste (`max_session_seconds -
+session_seconds_used`) avant d'envoyer le prochain `start`.
+
+Ce qui met fin à la session (fermeture de la connexion) :
+
+| Cause | Code de fermeture |
+|---|---|
+| Le client ferme la connexion (fin normale, ex. l'appel est terminé) | — (initié côté client) |
+| Le budget de la session ne permet plus le chunk suivant | `1000` (fermeture normale, côté serveur) |
+| Un chunk échoue (audio invalide, l'exe plante, etc.) | `1008` |
+| Limite de débit dépassée (chaque chunk compte comme une requête distincte) | `1013` |
+
+Pour une session Firebase (token, pas clé API), le comportement est
+inchangé : un seul chunk, puis fermeture — pas de boucle multi-chunks.
 
 `token` et `api_key` ne sont pas censés être envoyés ensemble ; si les
 deux sont présents, `api_key` est essayé en premier, avec le même repli
@@ -477,10 +535,11 @@ protocole que pour un `token` invalide.
 
 | Statut | Signification |
 |---|---|
+| 400 | Upload invalide (voir `API.md`), ou — spécifique aux clés API — ce clip/chunk dépasse ce qu'il reste au budget de la session en cours, sur n'importe laquelle des quatre fonctionnalités (le message précise combien il reste). |
 | 401 | Clé API manquante, inconnue, ou révoquée. |
-| 429 | Limite de débit ou quota mensuel dépassé pour l'offre de cette clé (le message précise lequel) — chaque clé a son propre budget indépendant, dimensionné selon son offre, non partagé avec les appels en session Firebase de cet utilisateur ni avec ses autres clés. |
+| 429 | Limite de débit dépassée — chaque requête (ou chaque chunk d'une session `/ws/deepfake`) compte, sur les quatre fonctionnalités. Chaque clé a son propre budget indépendant, dimensionné selon son offre, non partagé avec les appels en session Firebase de cet utilisateur ni avec ses autres clés. Il n'y a plus de "quota mensuel" séparé qui puisse déclencher un 429 — le budget par session (400 s'il est dépassé) est la seule limite de volume. |
 | 503 | Service de vérification de clé / de quota (Firestore) temporairement indisponible — sûr à réessayer. |
 
-Tout le reste (upload invalide en 400, échecs de traitement en 500/504)
-se comporte pareil quelle que soit la méthode d'auth — voir
+Tout le reste (upload invalide générique en 400, échecs de traitement en
+500/504) se comporte pareil quelle que soit la méthode d'auth — voir
 [`API.md`](API.md#erreurs-quotas-et-limites-de-débit).

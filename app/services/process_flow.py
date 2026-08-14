@@ -56,13 +56,21 @@ def run_feature_processing(
     error_label: str,
 ) -> dict | Response:
     """Pour un appelant par clé API (`auth.auth_method == "api_key"`), le
-    quota est vérifié par rapport à l'allocation de l'offre de cette clé
-    pour le mois calendaire en cours (api_key_quota.py) plutôt que par
-    rapport au plafond à vie fixe usage/{uid} du site — et, puisque leurs
-    fichiers sont les données de leur propre application plutôt que les
-    nôtres, rien n'est persisté dans Firestore ni synchronisé vers Zoho,
-    et l'entrée uploadée comme la sortie traitée sont supprimées du disque
-    local immédiatement après la construction de la réponse (plutôt que
+    quota n'est pas compté au fichier/mois mais au budget de secondes
+    d'une "session" — comme deepfake (voir deepfake_prepare.py et
+    api_key_quota.py) : puisque ces trois endpoints sont toujours
+    one-shot (une requête = une session d'un seul clip, pas de notion
+    multi-chunks comme /ws/deepfake), c'est simplement le clip qui doit
+    tenir dans le budget entier de l'offre. Il n'y a donc plus de
+    réservation Firestore avant traitement ; l'usage en secondes est
+    seulement journalisé après coup, à titre indicatif pour le tableau de
+    bord et le rapport mensuel — jamais pour bloquer une requête.
+
+    Puisque leurs fichiers sont les données de leur propre application
+    plutôt que les nôtres, rien n'est persisté dans Firestore ni
+    synchronisé vers Zoho pour un appelant par clé API, et l'entrée
+    uploadée comme la sortie traitée sont supprimées du disque local
+    immédiatement après la construction de la réponse (plutôt que
     conservées avec un TTL).
 
     Ce chemin par clé API retourne aussi une *forme* de réponse différente :
@@ -98,7 +106,20 @@ def run_feature_processing(
         raise HTTPException(status_code=400, detail=f"Could not determine audio duration: {exc}")
 
     duration_seconds = minutes_needed * 60
-    if duration_seconds > config.MAX_FILE_DURATION_SECONDS + config.FILE_DURATION_EPSILON_SECONDS:
+
+    max_session_seconds = None
+    if is_api_key:
+        max_session_seconds = api_key_quota.plan_session_seconds(auth.plan)
+        if duration_seconds > max_session_seconds + config.FILE_DURATION_EPSILON_SECONDS:
+            audio.cleanup_file(input_path)
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"This file is about {duration_seconds:.0f}s, but the {auth.plan} plan's "
+                    f"session budget for this feature is {max_session_seconds:.0f}s."
+                ),
+            )
+    elif duration_seconds > config.MAX_FILE_DURATION_SECONDS + config.FILE_DURATION_EPSILON_SECONDS:
         audio.cleanup_file(input_path)
         raise HTTPException(
             status_code=400,
@@ -108,29 +129,28 @@ def run_feature_processing(
             ),
         )
 
-    # --- réservation de quota ---------------------------------------------
-    # Les appels par clé API réservent sur l'allocation offre/mensuelle de
-    # cette clé ; les appels en session Firebase réservent sur le plafond
-    # fixe à vie du site.
-    try:
-        firestore_client = get_firestore_client()
-        if is_api_key:
-            usage_ref = api_key_quota.usage_doc_ref(firestore_client, auth.key_id)
-            max_files = api_key_quota.plan_file_limit(auth.plan)
-        else:
+    # --- réservation de quota (session Firebase uniquement) ----------------
+    # Les appels par clé API n'ont rien à réserver — leur budget par
+    # session vient d'être vérifié ci-dessus, en temps réel, sans passer
+    # par Firestore. Seul le chemin session Firebase garde le plafond fixe
+    # à vie du site, avec sa réservation transactionnelle habituelle.
+    firestore_client = None
+    usage_ref = None
+    if not is_api_key:
+        try:
+            firestore_client = get_firestore_client()
             usage_ref = firestore_client.collection("usage").document(uid)
-            max_files = config.MAX_FILES_PER_FEATURE
-        reserve_usage_file(firestore_client.transaction(), usage_ref, feature_key, max_files)
-    except FirestoreUnavailableError as exc:
-        audio.cleanup_file(input_path)
-        raise HTTPException(status_code=503, detail=str(exc))
-    except QuotaExceededError as exc:
-        audio.cleanup_file(input_path)
-        raise HTTPException(status_code=429, detail=str(exc))
-    except Exception as exc:  # noqa: BLE001
-        print(f"Quota reservation failed for {uid}/{feature_key}: {exc}")
-        audio.cleanup_file(input_path)
-        raise HTTPException(status_code=503, detail=f"Could not verify quota: {exc}")
+            reserve_usage_file(firestore_client.transaction(), usage_ref, feature_key, config.MAX_FILES_PER_FEATURE)
+        except FirestoreUnavailableError as exc:
+            audio.cleanup_file(input_path)
+            raise HTTPException(status_code=503, detail=str(exc))
+        except QuotaExceededError as exc:
+            audio.cleanup_file(input_path)
+            raise HTTPException(status_code=429, detail=str(exc))
+        except Exception as exc:  # noqa: BLE001
+            print(f"Quota reservation failed for {uid}/{feature_key}: {exc}")
+            audio.cleanup_file(input_path)
+            raise HTTPException(status_code=503, detail=f"Could not verify quota: {exc}")
 
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
 
@@ -170,16 +190,26 @@ def run_feature_processing(
             },
         )
 
-    # --- validation du quota -----------------------------------------------
-    try:
-        files_used = commit_reserved_file(firestore_client.transaction(), usage_ref, feature_key)
-    except Exception as exc:  # noqa: BLE001
-        print(f"Quota commit failed for {uid}/{feature_key}: {exc}")
-        release_quota_safely(firestore_client, usage_ref, feature_key, "commit failure")
-        files_used = None
+    # --- validation du quota (session Firebase) / journalisation (clé API) -
+    files_used = None
+    if is_api_key:
+        try:
+            usage_client = get_firestore_client()
+            api_key_quota.log_session_usage(usage_client, auth.key_id, feature_key, duration_seconds)
+        except FirestoreUnavailableError:
+            pass  # le suivi mensuel est purement indicatif — jamais bloquant
+        except Exception as exc:  # noqa: BLE001
+            print(f"Could not log session usage for key {auth.key_id}/{feature_key}: {exc}")
+    else:
+        try:
+            files_used = commit_reserved_file(firestore_client.transaction(), usage_ref, feature_key)
+        except Exception as exc:  # noqa: BLE001
+            print(f"Quota commit failed for {uid}/{feature_key}: {exc}")
+            release_quota_safely(firestore_client, usage_ref, feature_key, "commit failure")
+            files_used = None
 
-    if files_used is not None and not is_api_key:
-        log_usage_event(uid, feature_key)
+        if files_used is not None:
+            log_usage_event(uid, feature_key)
 
     # --- chemin clé API : corps binaire brut + en-têtes, nettoyage immédiat -
     if is_api_key:
@@ -195,9 +225,10 @@ def run_feature_processing(
                 "output_url": None,
                 "uid": uid,
                 "duration_seconds": duration_seconds,
-                "files_used": files_used,
-                "max_files": max_files,
+                "files_used": None,
+                "max_files": None,
                 "plan": auth.plan,
+                "max_session_seconds": max_session_seconds,
                 **extra_response_fields,
             }
 
@@ -210,20 +241,9 @@ def run_feature_processing(
             "X-Exit-Code": _header_value(completed.returncode),
             "X-Uid": _header_value(uid),
             "X-Duration-Seconds": _header_value(duration_seconds),
-            "X-Files-Used": "" if files_used is None else _header_value(files_used),
-            "X-Max-Files": "" if max_files is None else _header_value(max_files),
+            "X-Max-Session-Seconds": _header_value(max_session_seconds),
             "X-Plan": _header_value(auth.plan or ""),
         }
-        if files_used is None:
-            # Reflète le champ usage_warning du chemin JSON de la session
-            # Firebase — le traitement a réussi mais le suivi du quota
-            # peut être faussé, et un appelant par clé API lisant
-            # X-Files-Used ne devrait pas confondre une valeur vide avec
-            # "zéro utilisé" sans explication.
-            headers["X-Usage-Warning"] = _header_value(
-                f"{error_label.capitalize()} succeeded, but quota could not be recorded. "
-                "Please contact support if this persists."
-            )
         for field_name, value in extra_response_fields.items():
             headers[f"X-{_header_name(field_name)}"] = _header_value(value)
 
@@ -264,7 +284,7 @@ def run_feature_processing(
         "uid": uid,
         "duration_seconds": duration_seconds,
         "files_used": files_used,
-        "max_files": max_files,
+        "max_files": config.MAX_FILES_PER_FEATURE,
         **extra_response_fields,
     }
     if files_used is None:

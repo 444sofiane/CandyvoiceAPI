@@ -129,20 +129,24 @@ ZOHO_UNSATISFIED_WEBHOOK_HEADER = "X-Webhook-Secret"
 # --- Offres de clés API (paliers tarifaires SaaS) ---------------------------
 # Chiffres provisoires correspondant aux paliers "$X"/"$Y" de la page
 # tarifs — ajuste-les librement, rien d'autre ne dépend des valeurs
-# exactes. "files_per_feature_per_month" reflète le "X fichiers traités /
-# mois par outil" de la page tarifs (None = illimité) ; les limites de
-# débit sont sa colonne "limites de débit". Ce quota est distinct de
-# MAX_FILES_PER_FEATURE ci-dessus, qui régit toujours l'usage gratuit du
-# site web/de la session Firebase (un plafond fixe à vie, pas basé sur
-# une offre ni sur le mois calendaire).
+# exactes. Contrairement au chemin session Firebase (MAX_FILES_PER_FEATURE
+# ci-dessus, un plafond fixe à vie compté au fichier), l'usage par clé API
+# n'est pas compté au fichier mais au budget de secondes d'une "session"
+# par fonctionnalité — un appel /ws/deepfake en direct (cumulé sur tous
+# ses chunks — la seule fonctionnalité multi-chunks), ou un seul clip pour
+# les trois autres endpoints en one-shot. Voir api_key_quota.py pour
+# l'enforcement (temps réel, pas de réservation Firestore) et le
+# reporting (secondes cumulées loguées chaque mois à titre indicatif).
+# Les limites de débit sont la colonne "limites de débit" de la page
+# tarifs.
 API_KEY_PLANS = {
     "starter": {
-        "files_per_feature_per_month": 50,
+        "max_session_seconds": 60,
         "rate_limit_max_requests": 5,
         "rate_limit_window_seconds": 60,
     },
     "pro": {
-        "files_per_feature_per_month": 500,
+        "max_session_seconds": 180,
         "rate_limit_max_requests": 20,
         "rate_limit_window_seconds": 60,
     },
@@ -152,7 +156,7 @@ API_KEY_PLANS = {
         # n'existe), juste une valeur par défaut généreuse. Une vraie
         # offre "sur mesure" nécessiterait une surcharge par clé, pas une
         # valeur de palier partagée ; TODO si/quand ça devient nécessaire.
-        "files_per_feature_per_month": None,
+        "max_session_seconds": 1200,
         "rate_limit_max_requests": 100,
         "rate_limit_window_seconds": 60,
     },
