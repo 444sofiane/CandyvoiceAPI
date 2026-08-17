@@ -27,16 +27,26 @@ async def create_my_key(
     clé brute n'est retournée qu'ici ; seul son hash est stocké, donc
     montre-la à l'utilisateur une fois et dis-lui de la sauvegarder.
 
-    `plan` est fourni par le client et pris tel quel pour l'instant, à
-    l'image de la maquette actuelle de la page tarifs (choisir une offre,
-    obtenir une clé) — il n'y a pas encore de vérification de paiement
-    derrière. Avant que ce soit un vrai produit payant, l'attribution de
-    l'offre doit passer derrière un événement vérifié côté serveur (ex. un
-    webhook Stripe après le paiement), sinon rien n'empêche un appelant de
-    simplement demander "enterprise"."""
+    N'émet que des clés `DEFAULT_API_KEY_PLAN` (starter) — il n'y a pas
+    encore de vérification de paiement, donc laisser le client choisir
+    librement son offre ici permettrait à n'importe qui de s'auto-attribuer
+    "enterprise" gratuitement. Passer à une offre payante ne se fait que
+    via les endpoints admin (POST /api/admin/api-keys ou .../plan), qui
+    sont le point d'intégration naturel pour un futur webhook de paiement
+    (ex. Stripe) une fois le paiement réellement câblé."""
     uid = decoded_token.get("uid")
     label = body.label if body else None
     plan = body.plan if body else config.DEFAULT_API_KEY_PLAN
+
+    if plan != config.DEFAULT_API_KEY_PLAN:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Self-service key creation only issues {config.DEFAULT_API_KEY_PLAN} keys for now — "
+                "plan selection isn't backed by payment verification yet. Contact support to get a "
+                "key upgraded to a paid plan."
+            ),
+        )
 
     try:
         raw_key, key_id = create_api_key(uid, label, plan)

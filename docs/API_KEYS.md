@@ -72,15 +72,17 @@ dans [l'endpoint d'usage](#get-apikeyskey_idusage) et le rapport admin
 mensuel), mais rien n'y est appliqué — c'est toujours le budget par
 session qui bloque une requête, jamais un total mensuel.
 
-> **Frontière de confiance aujourd'hui :** `plan` sur `POST /api/keys` est
-> actuellement ce que le client envoie — il n'y a pas encore de
-> vérification de paiement derrière, puisque le paiement lui-même n'est
-> encore qu'une maquette. Avant que ça devienne un vrai produit payant,
-> l'attribution de l'offre doit passer derrière un événement vérifié côté
-> serveur (ex. un webhook Stripe déclenché après le paiement), sinon rien
-> n'empêche un appelant de simplement demander `"enterprise"`. En
-> attendant, traite la sélection d'offre en self-service comme un
-> comportement provisoire/de démo.
+> **Frontière de confiance :** il n'y a pas encore de vérification de
+> paiement, puisque le paiement lui-même n'est encore qu'une maquette —
+> donc `POST /api/keys` en self-service (ci-dessous) n'émet que des clés
+> `starter`, point final. Rien d'envoyé par le client n'est pris en
+> compte pour choisir une offre payante ; une clé ne peut être placée sur
+> `pro`/`enterprise` que via les endpoints admin
+> ([Administration](#administration-réservé-au-staff)), qui sont le point
+> d'intégration naturel pour un futur événement de paiement vérifié côté
+> serveur (ex. un webhook Stripe). Tant que ce câblage n'existe pas,
+> passer un utilisateur sur une offre payante est une action manuelle
+> côté staff.
 
 ## Obtenir une clé (self-service, depuis ton frontend)
 
@@ -91,8 +93,12 @@ moyen de toucher la clé de quelqu'un d'autre via ceux-ci.
 
 ### `POST /api/keys`
 
-Crée une nouvelle clé pour l'utilisateur connecté, sur l'offre qu'il a
-choisie sur la page tarifs.
+Crée une nouvelle clé `starter` pour l'utilisateur connecté. Self-service
+ne peut pas produire une clé `pro`/`enterprise` — voir l'encart
+"Frontière de confiance" ci-dessus. Si ta page tarifs laisse choisir une
+offre payante, ce choix doit déclencher un vrai paiement puis une
+attribution d'offre côté admin, pas un appel direct à cet endpoint avec
+`"plan": "pro"`.
 
 | En-tête | Requis | Notes |
 |---|---|---|
@@ -101,18 +107,19 @@ choisie sur la page tarifs.
 Corps :
 
 ```json
-{ "label": "my mobile app", "plan": "pro" }
+{ "label": "my mobile app" }
 ```
 
 Les deux champs sont optionnels — `label` vaut `null` par défaut, `plan`
-vaut `"starter"` par défaut. `plan` doit être l'un de `starter` / `pro` /
-`enterprise` ; une valeur non reconnue donne un `400`.
+vaut `"starter"` par défaut et **doit** valoir `"starter"` s'il est
+fourni ; toute autre valeur (`"pro"`, `"enterprise"`, ou une offre
+inconnue) donne un `400`.
 
 ```bash
 curl -X POST https://api.candyvoice.com/api/keys \
   -H "Authorization: Bearer $FIREBASE_ID_TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"label": "my mobile app", "plan": "pro"}'
+  -d '{"label": "my mobile app"}'
 ```
 
 ```json
@@ -121,7 +128,7 @@ curl -X POST https://api.candyvoice.com/api/keys \
   "key_id": "3f9c2a...e01b",
   "api_key": "cvk_wK8h2s9F3n...Qz",
   "label": "my mobile app",
-  "plan": "pro"
+  "plan": "starter"
 }
 ```
 
