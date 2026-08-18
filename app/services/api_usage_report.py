@@ -29,6 +29,39 @@ from app.services.reporting import FEATURE_DISPLAY_NAMES
 _HEADER_FILL = PatternFill(start_color="5A4BFF", end_color="5A4BFF", fill_type="solid")
 _HEADER_FONT = Font(color="FFFFFF", bold=True)
 
+_API_USAGE_COLLECTION = "apiUsage"
+
+
+def _write_api_usage_docs(firestore_client, period: str, per_user: dict) -> None:
+    """Écrit apiUsage/{uid} pour chaque utilisateur possédant au moins une
+    clé API, avec les mêmes totaux par fonctionnalité que le rapport admin
+    — c'est ce document que la Cloud Function syncApiUsageToZoho (dépôt
+    Functions séparé) lit pour pousser les compteurs vers le contact Zoho
+    correspondant.
+
+    Contrairement aux lignes du rapport e-mail (qui omettent les
+    utilisateurs sans activité ce mois-ci pour rester centrées sur
+    l'activité réelle), on écrit ici pour *tous* les utilisateurs de
+    per_user, y compris ceux à 0 : le document vit sous un id fixe
+    `{uid}` (pas de suffixe de période comme apiKeyUsage), donc sauter un
+    utilisateur à 0 laisserait les compteurs d'un mois précédent affichés
+    comme si c'était encore le mois en cours.
+
+    Au mieux, sans garantie, comme le reste des écritures de reporting
+    dans ce module — un échec d'écriture ici ne doit jamais empêcher
+    l'envoi du rapport e-mail."""
+    for uid, entry in per_user.items():
+        try:
+            firestore_client.collection(_API_USAGE_COLLECTION).document(uid).set({
+                "period": period,
+                **{
+                    feature_key: {"secondsUsed": round(entry["usage_seconds"][feature_key])}
+                    for feature_key in ALL_FEATURE_KEYS
+                },
+            })
+        except Exception as exc:  # noqa: BLE001
+            print(f"Failed to write apiUsage doc for uid {uid}: {exc}")
+
 
 def build_api_usage_report(period: str | None = None) -> dict:
     """Agrège l'usage de chaque clé API pour `period` ("YYYY-MM", par
@@ -44,8 +77,16 @@ def build_api_usage_report(period: str | None = None) -> dict:
     Inclut l'usage des clés révoquées — une clé révoquée en milieu de mois
     a quand même consommé du budget ce mois-là, et ceci est un rapport
     d'usage, pas une liste de clés actives. Les utilisateurs sans aucune
-    activité sur cette période sont omis, pour que le rapport reste centré
-    sur l'activité réelle plutôt que de lister chaque utilisateur inscrit.
+    activité sur cette période sont omis des `rows` retournées, pour que
+    le rapport e-mail reste centré sur l'activité réelle plutôt que de
+    lister chaque utilisateur inscrit.
+
+    Écrit aussi, en effet de bord, un document apiUsage/{uid} par
+    utilisateur possédant au moins une clé (voir _write_api_usage_docs)
+    — c'est ce que lit la Cloud Function syncApiUsageToZoho côté Zoho.
+    C'est le seul appelant de cette fonction (le endpoint
+    /api/admin/send-api-usage-report), donc caler cet effet de bord ici
+    plutôt que de dupliquer l'agrégation ailleurs.
 
     Retourne {"period": ..., "rows": [{"uid", "email", "plans",
     "key_count", "usage_seconds": {feature_key: float}, "total_seconds":
@@ -72,6 +113,8 @@ def build_api_usage_report(period: str | None = None) -> dict:
         data = snapshot.to_dict() if snapshot.exists else {}
         for feature_key in ALL_FEATURE_KEYS:
             entry["usage_seconds"][feature_key] += (data.get(feature_key) or {}).get("secondsUsed", 0)
+
+    _write_api_usage_docs(firestore_client, period, per_user)
 
     emails = resolve_emails(list(per_user.keys()))
 

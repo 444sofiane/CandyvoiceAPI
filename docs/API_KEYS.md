@@ -386,11 +386,20 @@ secondes sont purement indicatives (voir [Offres et
 limites](#offres-et-limites)) — le budget qui bloque réellement une
 requête est appliqué par session, pas récupérable depuis ce total mensuel.
 
+En plus de l'e-mail, cet appel écrit un document `apiUsage/{uid}` par
+utilisateur possédant au moins une clé (même pour un total à 0, pour ne
+pas laisser un compteur du mois précédent affiché comme si c'était le
+mois en cours) — `{"period", "noiseFilter": {"secondsUsed"},
+"imitation": {...}, "frameRecovery": {...}, "deepfake": {...}}`. C'est ce
+document que lit une Cloud Function côté Zoho (`syncApiUsageToZoho`, hors
+de ce dépôt) pour pousser ces compteurs vers les champs personnalisés du
+contact Zoho correspondant.
+
 > **Pas encore sur un planning.** Cet endpoint doit être déclenché — rien
 > ne l'appelle automatiquement une fois par mois. Mets ça en place en
 > externe (un `CronJob` k8s qui appelle cet endpoint sur un planning, ou
 > tout autre ordonnanceur) si tu veux que ça se déclenche vraiment tout
-> seul chaque mois.
+> seul chaque mois — et donc que la synchro Zoho ci-dessus reste à jour.
 
 ## Utiliser une clé avec les endpoints de traitement
 
