@@ -10,7 +10,9 @@ Les quatre fonctionnalités sont comptées en secondes de traitement, pas en
 nombre de fichiers, puisque l'enforcement par clé API est par budget de
 session — voir api_key_quota.py.
 """
+import asyncio
 import io
+import os
 import smtplib
 from email.mime.application import MIMEApplication
 from email.mime.multipart import MIMEMultipart
@@ -30,6 +32,12 @@ _HEADER_FILL = PatternFill(start_color="5A4BFF", end_color="5A4BFF", fill_type="
 _HEADER_FONT = Font(color="FFFFFF", bold=True)
 
 _API_USAGE_COLLECTION = "apiUsage"
+
+# Fréquence à laquelle periodic_api_usage_sync (ci-dessous) recalcule et
+# réécrit apiUsage/{uid} en tâche de fond, indépendamment de tout appel
+# explicite à /api/admin/send-api-usage-report — même style que
+# CLEANUP_SWEEP_INTERVAL_SECONDS dans downloads.py.
+API_USAGE_SYNC_INTERVAL_SECONDS = int(os.environ.get("API_USAGE_SYNC_INTERVAL_SECONDS", str(15 * 60)))
 
 
 def _write_api_usage_docs(firestore_client, period: str, per_user: dict) -> None:
@@ -134,6 +142,40 @@ def build_api_usage_report(period: str | None = None) -> dict:
     rows.sort(key=lambda row: row["total_seconds"], reverse=True)
 
     return {"period": period, "rows": rows}
+
+
+async def periodic_api_usage_sync():
+    """Tâche de fond qui rappelle build_api_usage_report() toutes les
+    API_USAGE_SYNC_INTERVAL_SECONDS secondes, uniquement pour son effet de
+    bord d'écriture apiUsage/{uid} (voir _write_api_usage_docs) — jamais
+    l'e-mail, qui reste réservé à un déclenchement explicite et volontaire
+    de /api/admin/send-api-usage-report par un admin.
+
+    Existe parce que rien n'appelait cette agrégation automatiquement :
+    sans ça, apiUsage/{uid} — et donc la synchro Zoho qui en dépend
+    (syncApiUsageToZoho, dépôt Functions séparé) — ne se met à jour que
+    si un admin déclenche le rapport à la main.
+
+    S'exécute une fois immédiatement puis à intervalle fixe, même style
+    que periodic_cleanup_sweep (downloads.py). Recalcule tout depuis zéro
+    à chaque passage (même travail que build_api_usage_report pour
+    n'importe quel appelant) — écrire deux fois la même chose depuis deux
+    réplicas qui tournent chacun leur propre copie de cette tâche est
+    inoffensif, puisque c'est un .set() complet et idempotent, pas un
+    increment. Une erreur (Firestore indisponible, etc.) est journalisée
+    et n'interrompt jamais la boucle. À appeler via asyncio.create_task(...)
+    au démarrage, et à annuler à l'arrêt — voir app/main.py."""
+    while True:
+        try:
+            # build_api_usage_report est synchrone (appels Firestore
+            # bloquants, un par clé) — délestée sur un thread pour ne pas
+            # geler l'event loop de ce worker pendant le balayage, même
+            # raisonnement que process_flow.py/detector.py pour le
+            # traitement audio.
+            await asyncio.to_thread(build_api_usage_report)
+        except Exception as exc:  # noqa: BLE001
+            print(f"periodic_api_usage_sync failed: {exc}")
+        await asyncio.sleep(API_USAGE_SYNC_INTERVAL_SECONDS)
 
 
 def _style_header_row(ws, row_idx, num_cols):

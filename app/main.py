@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 
 from app import config
+from app.services.api_usage_report import periodic_api_usage_sync
 from app.services.downloads import periodic_cleanup_sweep
 from app.services.firebase import init_firebase_admin
 from app.routers import admin_api_keys, admin_reports, api_keys, deepfake, frame_recovery, health, imitation, noise_filter, outputs, webhooks, zoho_auth
@@ -54,13 +55,18 @@ async def on_startup():
     # savoir pourquoi c'est nécessaire dans une installation conteneurisée
     # multi-réplicas.
     app.state.cleanup_sweep_task = asyncio.create_task(periodic_cleanup_sweep())
+    # Voir periodic_api_usage_sync : maintient apiUsage/{uid} (et donc la
+    # synchro Zoho qui en dépend) à jour sans dépendre d'un déclenchement
+    # manuel de /api/admin/send-api-usage-report.
+    app.state.api_usage_sync_task = asyncio.create_task(periodic_api_usage_sync())
 
 
 @app.on_event("shutdown")
 async def on_shutdown():
-    task = getattr(app.state, "cleanup_sweep_task", None)
-    if task is not None:
-        task.cancel()
+    for task_attr in ("cleanup_sweep_task", "api_usage_sync_task"):
+        task = getattr(app.state, task_attr, None)
+        if task is not None:
+            task.cancel()
 
 
 app.include_router(health.router)
