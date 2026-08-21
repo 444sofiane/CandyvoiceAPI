@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python3 -m py_compile app/config.py app/deps.py app/main.py)",
+      "Bash(python3 -m py_compile app/routers/*.py)"
+    ]
+  }
+}

@@ -33,7 +33,7 @@ services:
       - "traefik.http.routers.candyvoice_api.rule=Host(`api.candyvoice.com`)"
       # Priorité explicite : sans ça, Traefik départage deux routers avec la
       # même règle par ordre alphabétique du nom, et un autre conteneur
-      # ("backend", /srv/backend) qui revendique aussi api.candyvoice.com
+      # ("backend", /srv/candyvoice/backend) qui revendique aussi api.candyvoice.com
       # gagnait — toutes les requêtes (dont /ws/deepfake) lui étaient
       # envoyées silencieusement au lieu d'atteindre cette API.
       - "traefik.http.routers.candyvoice_api.priority=100"
