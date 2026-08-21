@@ -52,6 +52,11 @@ def prepare_deepfake_job(
 
     duration_seconds = minutes_needed * 60
 
+    # Clé API : quota payant par session, un dépassement reste un rejet dur.
+    # Session Firebase (le site démo) : on coupe au lieu de rejeter, avec la
+    # limite deepfake dédiée (plus généreuse que les trois autres
+    # fonctionnalités, voir config.MAX_FILE_DURATION_SECONDS_DEEPFAKE).
+    truncated = False
     max_session_seconds = None
     if is_api_key:
         max_session_seconds = api_key_quota.plan_session_seconds(auth.plan)
@@ -66,15 +71,12 @@ def prepare_deepfake_job(
                     f"{max_session_seconds:.0f}s budget ({auth.plan} plan)."
                 ),
             )
-    elif duration_seconds > config.MAX_FILE_DURATION_SECONDS + config.FILE_DURATION_EPSILON_SECONDS:
-        audio.cleanup_file(input_path)
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                f"This file is about {duration_seconds:.0f}s, but files must be "
-                f"{config.MAX_FILE_DURATION_SECONDS:.0f}s or shorter. Please trim it and try again."
-            ),
+    elif duration_seconds > config.MAX_FILE_DURATION_SECONDS_DEEPFAKE + config.FILE_DURATION_EPSILON_SECONDS:
+        duration_seconds = audio.truncate_wav_to_seconds(
+            input_path, config.MAX_FILE_DURATION_SECONDS_DEEPFAKE
         )
+        minutes_needed = duration_seconds / 60.0
+        truncated = True
 
     firestore_client = None
     usage_ref = None
@@ -112,6 +114,7 @@ def prepare_deepfake_job(
         "usage_ref": usage_ref,
         "minutes_needed": minutes_needed,
         "duration_seconds": duration_seconds,
+        "truncated": truncated,
         "input_path": input_path,
         "original_file_name": file_name,
         "max_files": max_files,
@@ -235,6 +238,7 @@ def finalize_deepfake_result(done_event: dict, job: dict, uid: str) -> dict:
         "verdict": verdict,
         "uid": uid,
         "duration_seconds": duration_seconds,
+        "truncated": job.get("truncated", False),
         "files_used": files_used,
         "max_files": job.get("max_files"),
     }

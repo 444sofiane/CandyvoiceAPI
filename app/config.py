@@ -33,6 +33,11 @@ FIREBASE_SERVICE_ACCOUNT_AVAILABLE = os.path.exists(FIREBASE_SERVICE_ACCOUNT_JSO
 # --- Modèle de quota --------------------------------------------------------
 MAX_FILES_PER_FEATURE = int(os.environ.get("MAX_FILES_PER_FEATURE", "10"))
 MAX_FILE_DURATION_SECONDS = float(os.environ.get("MAX_FILE_DURATION_SECONDS", "30"))
+# Deepfake tolère des clips plus longs que les trois autres fonctionnalités
+# (voir le miroir côté client MAX_FILE_DURATION_SECONDS=60 dans deepfake.js).
+MAX_FILE_DURATION_SECONDS_DEEPFAKE = float(
+    os.environ.get("MAX_FILE_DURATION_SECONDS_DEEPFAKE", "60")
+)
 FILE_DURATION_EPSILON_SECONDS = 0.5
 
 FEATURE_KEY_NOISE_FILTER = "noiseFilter"

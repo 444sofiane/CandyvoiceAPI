@@ -10,6 +10,7 @@ data:
   FIREBASE_SERVICE_ACCOUNT_JSON: "/app/secrets/candyvoice-f0ceff8ce151.json"
   MAX_FILES_PER_FEATURE: "10"
   MAX_FILE_DURATION_SECONDS: "30"
+  MAX_FILE_DURATION_SECONDS_DEEPFAKE: "60"
   MAX_UPLOAD_SIZE_BYTES: "52428800"  # 50MB — also caps the ws-max-size uvicorn is started with, see docker/Dockerfile.api
   DEEPFAKE_THRESHOLD_PERCENT: "50"
   FRAME_RECOVERY_FACTOR_MAX: "0.5"

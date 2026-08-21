@@ -107,6 +107,11 @@ def run_feature_processing(
 
     duration_seconds = minutes_needed * 60
 
+    # Clé API : quota payant, un dépassement reste un rejet dur (voir
+    # process_flow docstring). Session Firebase (le site démo) : on coupe
+    # au lieu de rejeter, pour que l'utilisateur obtienne quand même un
+    # résultat sur les premières config.MAX_FILE_DURATION_SECONDS secondes.
+    truncated = False
     max_session_seconds = None
     if is_api_key:
         max_session_seconds = api_key_quota.plan_session_seconds(auth.plan)
@@ -120,14 +125,9 @@ def run_feature_processing(
                 ),
             )
     elif duration_seconds > config.MAX_FILE_DURATION_SECONDS + config.FILE_DURATION_EPSILON_SECONDS:
-        audio.cleanup_file(input_path)
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                f"This file is about {duration_seconds:.0f}s, but files must be "
-                f"{config.MAX_FILE_DURATION_SECONDS:.0f}s or shorter. Please trim it and try again."
-            ),
-        )
+        duration_seconds = audio.truncate_wav_to_seconds(input_path, config.MAX_FILE_DURATION_SECONDS)
+        minutes_needed = duration_seconds / 60.0
+        truncated = True
 
     # --- réservation de quota (session Firebase uniquement) ----------------
     # Les appels par clé API n'ont rien à réserver — leur budget par
@@ -283,6 +283,7 @@ def run_feature_processing(
         "output_url": output_url,
         "uid": uid,
         "duration_seconds": duration_seconds,
+        "truncated": truncated,
         "files_used": files_used,
         "max_files": config.MAX_FILES_PER_FEATURE,
         **extra_response_fields,

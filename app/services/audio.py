@@ -73,6 +73,26 @@ def get_audio_duration_minutes(file_path):
         return wav_file.getnframes() / float(frame_rate) / 60.0
 
 
+def truncate_wav_to_seconds(file_path, max_seconds):
+    """Coupe le fichier WAV situé à `file_path` à ses `max_seconds`
+    premières secondes, en le réécrivant sur place. Ne fait rien si le
+    fichier est déjà assez court. Retourne la durée résultante en
+    secondes, utilisée pour remplacer `duration_seconds` chez l'appelant."""
+    with wave.open(file_path, "rb") as wav_in:
+        params = wav_in.getparams()
+        frame_rate = wav_in.getframerate()
+        max_frames = int(max_seconds * frame_rate)
+        if wav_in.getnframes() <= max_frames:
+            return wav_in.getnframes() / float(frame_rate)
+        frames = wav_in.readframes(max_frames)
+
+    with wave.open(file_path, "wb") as wav_out:
+        wav_out.setparams(params)
+        wav_out.writeframes(frames)
+
+    return max_frames / float(frame_rate)
+
+
 def build_output_path(input_path, requested_name=None, owner_uid=None):
     input_name = os.path.basename(input_path)
     stem = os.path.splitext(input_name)[0]
